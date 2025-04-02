@@ -1,7 +1,7 @@
 {
-  "name": "Te Reo Māori Ling Sound Test",
-  "short_name": "MāoriLing",
-  "description": "App for performing the te reo Māori Ling Sound Test",
+  "name": "UC Ling Sound Test",
+  "short_name": "UCLing",
+  "description": "App for performing the Ling Sound Test in te reo Māori or New Zealand English",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#ffffff",
