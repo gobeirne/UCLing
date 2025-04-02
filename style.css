@@ -1,0 +1,121 @@
+body {
+  font-family: sans-serif;
+  margin: 0;
+  padding: 20px;
+  background: #ffffff;
+  color: #000000;
+  text-align: center;
+}
+
+.container {
+  max-width: 600px;
+  margin: auto;
+}
+
+.header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 1em;
+}
+
+.uc-logo {
+  height: 2.2em;
+  max-width: 100px;
+  object-fit: contain;
+}
+
+h1 {
+  font-size: 1.5em;
+  margin-bottom: 1em;
+}
+
+button {
+  margin: 5px;
+  padding: 10px 15px;
+  font-size: 16px;
+  border: none;
+  border-radius: 6px;
+  background-color: #000000;
+  color: white;
+  cursor: pointer;
+  min-width: 100px;
+}
+
+button:hover {
+  background-color: #333333;
+}
+
+button.active {
+  background-color: #666666;
+}
+
+.calibrate {
+  background-color: #d71920;
+  margin-bottom: 20px;
+}
+
+#test-sound.calibrate {
+  background-color: #d71920;
+}
+
+.language-toggle {
+  margin-bottom: 20px;
+}
+
+.language-toggle button {
+  margin: 0 10px;
+  padding: 8px 12px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  background-color: #eee;
+  cursor: pointer;
+}
+
+.language-toggle button.active {
+  background-color: #d71920;
+  color: white;
+  font-weight: bold;
+}
+
+.controls {
+  margin: 20px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#volume {
+  width: 160px;
+  flex-shrink: 0;
+}
+
+#dB-label {
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.slider-label-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+#mode-badge {
+  display: block;
+  margin-top: 5px;
+  font-size: 0.9em;
+  color: #000000;
+}
+
+.phoneme-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 10px 0;
+}

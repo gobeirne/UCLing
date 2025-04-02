@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Māori Ling Test</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon-192.png" sizes="192x192" />
+  <meta name="theme-color" content="#000000" />
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <img src="UClogo.png" alt="University of Canterbury logo" class="uc-logo" />
+      <h1 id="app-title">Te Reo Māori Ling Sound Test</h1>
+    </div>
+
+    <div class="language-toggle">
+      <button id="btn-maori" onclick="setLanguage('maori')">Te Reo Māori</button>
+      <button id="btn-english" onclick="setLanguage('english')">English</button>
+    </div>
+
+    <button id="calibrate-btn" class="calibrate" onclick="toggleCalibration(this)">Calibration</button>
+
+    <div class="controls">
+      <label for="volume">Output Level</label>
+      <div class="slider-label-group">
+        <input type="range" id="volume" />
+        <span id="dB-label">0 dB FS</span>
+      </div>
+      <span id="mode-badge">Uncalibrated Mode</span>
+    </div>
+
+    <div id="buttons-container"></div>
+  </div>
+
+  <script src="script.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service-worker.js")
+        .then(() => console.log("Service Worker registered"))
+        .catch(err => console.error("Service Worker registration failed", err));
+    }
+  </script>
+</body>
+</html>
