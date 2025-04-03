@@ -1,3 +1,5 @@
+console.log("📣 Māori Ling App – script.js version 1.7 – Apr 3, 2025");
+
 const languageData = {
   maori: {
     title: "Te Reo Māori Ling Sound Test",
@@ -21,6 +23,9 @@ let sliderMinDB = -100;
 let sliderMaxDB = 0;
 let currentSliderDB = 0;
 let calibratedGain = 1;
+
+// 🔁 Use one shared AudioContext
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
 const audioCache = {};
 
@@ -81,17 +86,13 @@ async function playSound(key, button) {
 
   const src = audioCache[key];
   console.log("Attempting to play:", key, src);
-  if (!src) {
-    console.warn("No source found for", key);
-    return;
-  }
+  if (!src) return;
 
   try {
     const response = await fetch(src);
     const arrayBuffer = await response.arrayBuffer();
 
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    await audioCtx.resume(); // Required for iOS Safari
+    await audioCtx.resume(); // 🔓 unlock audio on iOS
 
     const buffer = await audioCtx.decodeAudioData(arrayBuffer);
     const source = audioCtx.createBufferSource();
@@ -111,7 +112,6 @@ async function playSound(key, button) {
       button.classList.remove('active');
       currentAudio = null;
       currentButton = null;
-      audioCtx.close();
     };
   } catch (e) {
     console.error("Error playing", key, e);
@@ -172,7 +172,6 @@ function showTestButton() {
       try {
         const response = await fetch(audioCache[testKey]);
         const arrayBuffer = await response.arrayBuffer();
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         await audioCtx.resume();
         const buffer = await audioCtx.decodeAudioData(arrayBuffer);
         const source = audioCtx.createBufferSource();
@@ -188,7 +187,6 @@ function showTestButton() {
 
         source.onended = () => {
           currentAudio = null;
-          audioCtx.close();
         };
       } catch (e) {
         console.error("Test sound error:", e);
@@ -210,7 +208,7 @@ function toggleCalibration(button) {
 
   setTimeout(() => {
     const measured = prompt("Enter measured calibration level (in dB A):");
-    audio.pause(); // <-- Always stop calibration audio, even on cancel
+    audio.pause(); // 🛑 always stop sound
 
     if (!measured || isNaN(measured)) return;
 
@@ -219,6 +217,7 @@ function toggleCalibration(button) {
 
     sliderMaxDB = calibratedMaxDB;
     sliderMinDB = Math.floor(calibratedMaxDB / 5) * 5 - 30;
+
     const slider = document.getElementById('volume');
     slider.min = sliderMinDB;
     slider.max = sliderMaxDB;
