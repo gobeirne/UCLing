@@ -86,29 +86,28 @@ async function playSound(key, button) {
 
   const src = audioCache[key];
   console.log("Attempting to play:", key, src);
-  if (!src) return;
+  if (!src) {
+    console.warn("No source found for", key);
+    return;
+  }
 
   try {
-    const response = await fetch(src);
-    const arrayBuffer = await response.arrayBuffer();
+    const audio = new Audio(src);
+    await audio.play(); // ✅ Trusted gesture-unlocked playback
 
-    await audioCtx.resume(); // 🔓 unlock audio on iOS
+    await audioCtx.resume(); // ✅ Resume the AudioContext for safety
 
-    const buffer = await audioCtx.decodeAudioData(arrayBuffer);
-    const source = audioCtx.createBufferSource();
-    source.buffer = buffer;
-
+    const track = audioCtx.createMediaElementSource(audio);
     const gainNode = audioCtx.createGain();
     gainNode.gain.value = calibratedGain;
 
-    source.connect(gainNode).connect(audioCtx.destination);
-    source.start();
+    track.connect(gainNode).connect(audioCtx.destination);
 
-    currentAudio = source;
+    currentAudio = audio;
     currentButton = button;
     button.classList.add('active');
 
-    source.onended = () => {
+    audio.onended = () => {
       button.classList.remove('active');
       currentAudio = null;
       currentButton = null;
@@ -117,6 +116,7 @@ async function playSound(key, button) {
     console.error("Error playing", key, e);
   }
 }
+
 
 function createButtons() {
   const container = document.getElementById('buttons-container');
