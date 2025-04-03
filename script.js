@@ -185,7 +185,7 @@ function showTestButton() {
 
 function toggleCalibration(button) {
   stopCurrentAudio();
-  alert("Please turn your phone volume all the way up before continuing.");
+  alert("Please turn your device volume all the way up before continuing.");
   const key = currentLanguage === "english" ? "NZEng_calib" : "TeReo_calib";
   const audio = audioElements[key].cloneNode();
   audio.volume = 1.0;
@@ -259,6 +259,7 @@ window.onload = async () => {
     });
     const msg = `You last calibrated this device to ${data.level} dB A on ${formatted}. Use this calibration?`;
     if (confirm(msg)) {
+      alert("Remember to turn your device volume to full.");
       applyStoredCalibration(data);
     }
   }
