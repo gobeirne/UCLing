@@ -1,5 +1,5 @@
 
-console.log("📣 Māori Ling App – script.js v2.0 – persistent calibration");
+console.log("UC Ling App – script.js v2.0 – persistent calibration");
 
 const languageData = {
   maori: {
