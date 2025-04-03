@@ -1,13 +1,13 @@
-console.log("📣 Māori Ling App – script.js version 1.7 – Apr 3, 2025");
+console.log("📣 Māori Ling App – script.js version 1.8 – Apr 3, 2025");
 
 const languageData = {
   maori: {
-    title: "Te Reo Māori Ling Sound Test",
+    title: "Ling Sound Test",
     phonemes: ['m', 'p', 't', 'h', 'a', 'i', 'o'],
     prefix: "TeReo_"
   },
   english: {
-    title: "New Zealand English Ling Sound Test",
+    title: "Ling Sound Test",
     phonemes: ['m', 'or', 'ah', 'oo', 'ee', 'sh', 'ss'],
     prefix: "NZEng_"
   }
@@ -24,9 +24,8 @@ let sliderMaxDB = 0;
 let currentSliderDB = 0;
 let calibratedGain = 1;
 
-// 🔁 Use one shared AudioContext
+// Global audio context
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
 const audioCache = {};
 
 function preloadSounds() {
@@ -71,8 +70,8 @@ function updateGainFromSlider() {
 }
 
 function stopCurrentAudio() {
-  if (currentAudio && currentAudio.stop) {
-    currentAudio.stop();
+  if (currentAudio && currentAudio.pause) {
+    currentAudio.pause();
     currentAudio = null;
   }
   if (currentButton) {
@@ -86,22 +85,17 @@ async function playSound(key, button) {
 
   const src = audioCache[key];
   console.log("Attempting to play:", key, src);
-  if (!src) {
-    console.warn("No source found for", key);
-    return;
-  }
+  if (!src) return;
 
   try {
     const audio = new Audio(src);
-    await audio.play(); // ✅ Trusted gesture-unlocked playback
-
-    await audioCtx.resume(); // ✅ Resume the AudioContext for safety
-
     const track = audioCtx.createMediaElementSource(audio);
     const gainNode = audioCtx.createGain();
     gainNode.gain.value = calibratedGain;
-
     track.connect(gainNode).connect(audioCtx.destination);
+
+    await audioCtx.resume();
+    await audio.play();
 
     currentAudio = audio;
     currentButton = button;
@@ -116,7 +110,6 @@ async function playSound(key, button) {
     console.error("Error playing", key, e);
   }
 }
-
 
 function createButtons() {
   const container = document.getElementById('buttons-container');
@@ -169,23 +162,19 @@ function showTestButton() {
     testButton.onclick = async () => {
       stopCurrentAudio();
       const testKey = currentLanguage === "english" ? "NZEng_calib" : "TeReo_calib";
+      const src = audioCache[testKey];
       try {
-        const response = await fetch(audioCache[testKey]);
-        const arrayBuffer = await response.arrayBuffer();
-        await audioCtx.resume();
-        const buffer = await audioCtx.decodeAudioData(arrayBuffer);
-        const source = audioCtx.createBufferSource();
-        source.buffer = buffer;
-
+        const audio = new Audio(src);
+        const track = audioCtx.createMediaElementSource(audio);
         const gainNode = audioCtx.createGain();
         gainNode.gain.value = calibratedGain;
+        track.connect(gainNode).connect(audioCtx.destination);
 
-        source.connect(gainNode).connect(audioCtx.destination);
-        source.start();
+        await audioCtx.resume();
+        await audio.play();
 
-        currentAudio = source;
-
-        source.onended = () => {
+        currentAudio = audio;
+        audio.onended = () => {
           currentAudio = null;
         };
       } catch (e) {
@@ -208,7 +197,7 @@ function toggleCalibration(button) {
 
   setTimeout(() => {
     const measured = prompt("Enter measured calibration level (in dB A):");
-    audio.pause(); // 🛑 always stop sound
+    audio.pause();
 
     if (!measured || isNaN(measured)) return;
 
@@ -216,7 +205,7 @@ function toggleCalibration(button) {
     isCalibrated = true;
 
     sliderMaxDB = calibratedMaxDB;
-    sliderMinDB = Math.floor(calibratedMaxDB / 5) * 5 - 30;
+    sliderMinDB = Math.floor(calibratedMaxDB / 5) * 5 - 60; // ⬅️ Expanded to 60 dB range
 
     const slider = document.getElementById('volume');
     slider.min = sliderMinDB;
