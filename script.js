@@ -91,6 +91,8 @@ async function playSound(key, button) {
     const arrayBuffer = await response.arrayBuffer();
 
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume(); // Required for iOS Safari
+
     const buffer = await audioCtx.decodeAudioData(arrayBuffer);
     const source = audioCtx.createBufferSource();
     source.buffer = buffer;
@@ -170,8 +172,8 @@ function showTestButton() {
       try {
         const response = await fetch(audioCache[testKey]);
         const arrayBuffer = await response.arrayBuffer();
-
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await audioCtx.resume();
         const buffer = await audioCtx.decodeAudioData(arrayBuffer);
         const source = audioCtx.createBufferSource();
         source.buffer = buffer;
@@ -208,10 +210,13 @@ function toggleCalibration(button) {
 
   setTimeout(() => {
     const measured = prompt("Enter measured calibration level (in dB A):");
+    audio.pause(); // <-- Always stop calibration audio, even on cancel
+
     if (!measured || isNaN(measured)) return;
+
     calibratedMaxDB = parseFloat(measured);
     isCalibrated = true;
-    audio.pause();
+
     sliderMaxDB = calibratedMaxDB;
     sliderMinDB = Math.floor(calibratedMaxDB / 5) * 5 - 30;
     const slider = document.getElementById('volume');
@@ -219,6 +224,7 @@ function toggleCalibration(button) {
     slider.max = sliderMaxDB;
     slider.step = 0.1;
     slider.value = sliderMaxDB;
+
     document.getElementById('mode-badge').textContent = `Calibrated Mode`;
     updateGainFromSlider();
     showTestButton();
