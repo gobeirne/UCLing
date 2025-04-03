@@ -1,4 +1,5 @@
-console.log("UC Ling App – script.js v1.9 – using AudioBufferSourceNode");
+
+console.log("📣 Māori Ling App – script.js v2.0 – persistent calibration");
 
 const languageData = {
   maori: {
@@ -207,7 +208,26 @@ function toggleCalibration(button) {
     document.getElementById('mode-badge').textContent = `Calibrated Mode`;
     updateGainFromSlider();
     showTestButton();
+    localStorage.setItem("calibrationData", JSON.stringify({
+      level: calibratedMaxDB,
+      timestamp: new Date().toISOString()
+    }));
   }, 2000);
+}
+
+function applyStoredCalibration(data) {
+  calibratedMaxDB = data.level;
+  isCalibrated = true;
+  sliderMaxDB = calibratedMaxDB;
+  sliderMinDB = Math.floor(calibratedMaxDB / 5) * 5 - 60;
+  const slider = document.getElementById('volume');
+  slider.min = sliderMinDB;
+  slider.max = sliderMaxDB;
+  slider.step = 0.1;
+  slider.value = sliderMaxDB;
+  document.getElementById('mode-badge').textContent = `Calibrated Mode`;
+  updateGainFromSlider();
+  showTestButton();
 }
 
 window.onload = async () => {
@@ -228,4 +248,18 @@ window.onload = async () => {
   slider.addEventListener('touchend', updateGainFromSlider);
 
   updateGainFromSlider();
+
+  const storedCal = localStorage.getItem("calibrationData");
+  if (storedCal) {
+    const data = JSON.parse(storedCal);
+    const date = new Date(data.timestamp);
+    const formatted = date.toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short"
+    });
+    const msg = `You last calibrated this device to ${data.level} dB A on ${formatted}. Use this calibration?`;
+    if (confirm(msg)) {
+      applyStoredCalibration(data);
+    }
+  }
 };
