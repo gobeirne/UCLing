@@ -1,13 +1,13 @@
-console.log("📣 Māori Ling App – script.js v1.9 – using AudioBufferSourceNode");
+console.log("UC Ling App – script.js v1.9 – using AudioBufferSourceNode");
 
 const languageData = {
   maori: {
-    title: "Te Reo Māori Ling Sound Test",
+    title: "Ling Sound Test",
     phonemes: ['m', 'p', 't', 'h', 'a', 'i', 'o'],
     prefix: "TeReo_"
   },
   english: {
-    title: "New Zealand English Ling Sound Test",
+    title: "Ling Sound Test",
     phonemes: ['m', 'or', 'ah', 'oo', 'ee', 'sh', 'ss'],
     prefix: "NZEng_"
   }
