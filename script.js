@@ -1,11 +1,11 @@
 const languageData = {
   maori: {
-    title: "Ling Sound Test",
+    title: "Te Reo Māori Ling Sound Test",
     phonemes: ['m', 'p', 't', 'h', 'a', 'i', 'o'],
     prefix: "TeReo_"
   },
   english: {
-    title: "Ling Sound Test",
+    title: "New Zealand English Ling Sound Test",
     phonemes: ['m', 'or', 'ah', 'oo', 'ee', 'sh', 'ss'],
     prefix: "NZEng_"
   }
@@ -64,7 +64,10 @@ function updateGainFromSlider() {
   }
 }
 
-document.getElementById('volume').addEventListener('input', updateGainFromSlider);
+const volumeSlider = document.getElementById('volume');
+  volumeSlider.addEventListener('input', updateGainFromSlider);
+  volumeSlider.addEventListener('change', updateGainFromSlider);
+  volumeSlider.addEventListener('touchend', updateGainFromSlider);
 
 function stopCurrentAudio() {
   if (currentAudio) {
