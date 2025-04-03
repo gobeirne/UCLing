@@ -1,13 +1,13 @@
-console.log("📣 Māori Ling App – script.js version 1.8 – Apr 3, 2025");
+console.log("📣 Māori Ling App – script.js v1.9 – using AudioBufferSourceNode");
 
 const languageData = {
   maori: {
-    title: "Ling Sound Test",
+    title: "Te Reo Māori Ling Sound Test",
     phonemes: ['m', 'p', 't', 'h', 'a', 'i', 'o'],
     prefix: "TeReo_"
   },
   english: {
-    title: "Ling Sound Test",
+    title: "New Zealand English Ling Sound Test",
     phonemes: ['m', 'or', 'ah', 'oo', 'ee', 'sh', 'ss'],
     prefix: "NZEng_"
   }
@@ -24,25 +24,40 @@ let sliderMaxDB = 0;
 let currentSliderDB = 0;
 let calibratedGain = 1;
 
-// Global audio context
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 const audioCache = {};
+const audioBuffers = {};
+const audioElements = {};
 
 function preloadSounds() {
+  const promises = [];
+
   Object.values(languageData).forEach(lang => {
     lang.phonemes.forEach(phoneme => {
       const p = lang.prefix;
       const key1 = `${p}${phoneme}`;
       const key3 = `${p}${[phoneme, phoneme, phoneme].join('_')}`;
       const key5 = `${p}${Array(5).fill(phoneme).join('_')}`;
-      audioCache[key1] = `sounds/${key1}.mp3`;
-      audioCache[key3] = `sounds/${key3}.mp3`;
-      audioCache[key5] = `sounds/${key5}.mp3`;
+      [key1, key3, key5].forEach(key => {
+        const url = `sounds/${key}.mp3`;
+        audioCache[key] = url;
+        promises.push(fetch(url)
+          .then(r => r.arrayBuffer())
+          .then(buf => audioCtx.decodeAudioData(buf))
+          .then(decoded => { audioBuffers[key] = decoded; }));
+      });
     });
   });
 
-  audioCache['TeReo_calib'] = 'sounds/TeReo_calib.mp3';
-  audioCache['NZEng_calib'] = 'sounds/NZEng_calib.mp3';
+  ['TeReo_calib', 'NZEng_calib'].forEach(key => {
+    const url = `sounds/${key}.mp3`;
+    audioCache[key] = url;
+    const el = new Audio(url);
+    el.preload = "auto";
+    audioElements[key] = el;
+  });
+
+  return Promise.all(promises);
 }
 
 function updateGainFromSlider() {
@@ -70,45 +85,37 @@ function updateGainFromSlider() {
 }
 
 function stopCurrentAudio() {
-  if (currentAudio && currentAudio.pause) {
-    currentAudio.pause();
-    currentAudio = null;
-  }
-  if (currentButton) {
-    currentButton.classList.remove('active');
-    currentButton = null;
-  }
+  if (currentAudio && currentAudio.stop) currentAudio.stop();
+  if (currentAudio && currentAudio.pause) currentAudio.pause();
+  currentAudio = null;
+  if (currentButton) currentButton.classList.remove('active');
+  currentButton = null;
 }
 
-async function playSound(key, button) {
+function playSound(key, button) {
   stopCurrentAudio();
-
-  const src = audioCache[key];
-  console.log("Attempting to play:", key, src);
-  if (!src) return;
-
-  try {
-    const audio = new Audio(src);
-    const track = audioCtx.createMediaElementSource(audio);
-    const gainNode = audioCtx.createGain();
-    gainNode.gain.value = calibratedGain;
-    track.connect(gainNode).connect(audioCtx.destination);
-
-    await audioCtx.resume();
-    await audio.play();
-
-    currentAudio = audio;
-    currentButton = button;
-    button.classList.add('active');
-
-    audio.onended = () => {
-      button.classList.remove('active');
-      currentAudio = null;
-      currentButton = null;
-    };
-  } catch (e) {
-    console.error("Error playing", key, e);
+  const buffer = audioBuffers[key];
+  if (!buffer) {
+    console.warn("No decoded buffer for:", key);
+    return;
   }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.value = calibratedGain;
+  source.connect(gainNode).connect(audioCtx.destination);
+  source.start();
+
+  currentAudio = source;
+  currentButton = button;
+  button.classList.add('active');
+
+  source.onended = () => {
+    button.classList.remove('active');
+    currentAudio = null;
+    currentButton = null;
+  };
 }
 
 function createButtons() {
@@ -159,27 +166,17 @@ function showTestButton() {
     testButton.id = 'test-sound';
     testButton.textContent = 'Test Calibrated Sound';
     testButton.className = 'calibrate';
-    testButton.onclick = async () => {
+    testButton.onclick = () => {
       stopCurrentAudio();
-      const testKey = currentLanguage === "english" ? "NZEng_calib" : "TeReo_calib";
-      const src = audioCache[testKey];
-      try {
-        const audio = new Audio(src);
-        const track = audioCtx.createMediaElementSource(audio);
-        const gainNode = audioCtx.createGain();
-        gainNode.gain.value = calibratedGain;
-        track.connect(gainNode).connect(audioCtx.destination);
-
-        await audioCtx.resume();
-        await audio.play();
-
-        currentAudio = audio;
-        audio.onended = () => {
-          currentAudio = null;
-        };
-      } catch (e) {
-        console.error("Test sound error:", e);
-      }
+      const key = currentLanguage === "english" ? "NZEng_calib" : "TeReo_calib";
+      const audio = audioElements[key].cloneNode();
+      const track = audioCtx.createMediaElementSource(audio);
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = calibratedGain;
+      track.connect(gainNode).connect(audioCtx.destination);
+      audio.play();
+      currentAudio = audio;
+      audio.onended = () => currentAudio = null;
     };
     document.querySelector('.controls').appendChild(testButton);
   }
@@ -188,9 +185,8 @@ function showTestButton() {
 function toggleCalibration(button) {
   stopCurrentAudio();
   alert("Please turn your phone volume all the way up before continuing.");
-  const calibKey = currentLanguage === "english" ? "NZEng_calib" : "TeReo_calib";
-  const src = audioCache[calibKey];
-  const audio = new Audio(src);
+  const key = currentLanguage === "english" ? "NZEng_calib" : "TeReo_calib";
+  const audio = audioElements[key].cloneNode();
   audio.volume = 1.0;
   audio.loop = true;
   audio.play();
@@ -198,29 +194,24 @@ function toggleCalibration(button) {
   setTimeout(() => {
     const measured = prompt("Enter measured calibration level (in dB A):");
     audio.pause();
-
     if (!measured || isNaN(measured)) return;
-
     calibratedMaxDB = parseFloat(measured);
     isCalibrated = true;
-
     sliderMaxDB = calibratedMaxDB;
-    sliderMinDB = Math.floor(calibratedMaxDB / 5) * 5 - 60; // ⬅️ Expanded to 60 dB range
-
+    sliderMinDB = Math.floor(calibratedMaxDB / 5) * 5 - 60;
     const slider = document.getElementById('volume');
     slider.min = sliderMinDB;
     slider.max = sliderMaxDB;
     slider.step = 0.1;
     slider.value = sliderMaxDB;
-
     document.getElementById('mode-badge').textContent = `Calibrated Mode`;
     updateGainFromSlider();
     showTestButton();
   }, 2000);
 }
 
-window.onload = () => {
-  preloadSounds();
+window.onload = async () => {
+  await preloadSounds();
   const savedLang = localStorage.getItem("selectedLanguage");
   if (savedLang && languageData[savedLang]) {
     currentLanguage = savedLang;
