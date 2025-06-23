@@ -4,7 +4,7 @@ console.log("UC Ling App – script.js v2.0 – persistent calibration");
 const languageData = {
   maori: {
     title: "Ling Sound Test",
-    phonemes: ['m', 'p', 't', 'h', 'a', 'i', 'o'],
+    phonemes: ['m', 'o', 'a', 'i', 'p', 't', 'h'],
     prefix: "TeReo_"
   },
   english: {
