@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Pairing Demo — 4-Digit Cloud + QR Offline</title>
+<style>
+  :root{--bg:#f7f7f8;--fg:#222;--muted:#666;--ok:#1b5e20;--okbg:#e8f5e9;--warn:#795548;--warnbg:#fff8e1;--bad:#b71c1c;--badbg:#ffebee}
+  *{box-sizing:border-box} body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  h1{margin:0 0 8px;font-size:18px} h2{margin:0 0 6px;font-size:16px}
+  .row{display:grid;gap:12px;grid-template-columns:1fr} @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px}
+  .muted{color:var(--muted);font-size:.9rem}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed} input,textarea{width:100%;padding:8px;border:1px solid #ccc;border-radius:8px}
+  textarea{height:120px;font:12px ui-monospace,monospace}
+  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
+  .ok{background:var(--okbg);color:var(--ok)} .warn{background:var(--warnbg);color:var(--warn)} .bad{background:var(--badbg);color:var(--bad)}
+  .controls button{margin:6px 8px 0 0}
+  .tabs{display:flex;gap:8px;margin:8px 0} .tab{padding:6px 10px;border-radius:999px;border:1px solid #ccc;background:#fff;cursor:pointer}
+  .tab.active{background:#eef} .pane{display:none} .pane.active{display:block}
+  canvas{image-rendering:pixelated}
+</style>
+</head>
+<body>
+<h1>Pairing Demo — 4-Digit Cloud + QR Offline</h1>
+<div class="card muted">Pick a role (Host/Joiner). Use <b>Cloud (4-digit)</b> for the easiest UX, or <b>QR (offline)</b> when there’s no internet. After pairing, use the buttons to trigger audio on the other page.</div>
+
+<div class="row">
+  <div class="card">
+    <h2>Role</h2>
+    <button id="roleHost">Host</button>
+    <button id="roleJoin">Joiner</button>
+    <span id="roleBadge" class="status warn">no role</span>
+    <div class="muted" style="margin-top:6px">Host starts; Joiner responds. Either can send actions once connected.</div>
+  </div>
+  <div class="card">
+    <h2>Status</h2>
+    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
+    <div id="log" class="muted" style="margin-top:8px;max-height:160px;overflow:auto;white-space:pre-wrap"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="tabs">
+    <div class="tab active" data-pane="cloud">Cloud (4-digit)</div>
+    <div class="tab" data-pane="qr">QR (offline)</div>
+  </div>
+
+  <div id="pane-cloud" class="pane active">
+    <div class="row">
+      <div class="card">
+        <h2>Firebase</h2>
+        <button id="initFb">Init Firebase</button>
+        <span id="fbState" class="status warn">not ready</span>
+      </div>
+      <div class="card">
+        <h2>Start (4-digit code)</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label>Code:&nbsp;<input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="1234" style="width:7ch"/></label>
+          <button id="startCloud">Start</button>
+        </div>
+        <div class="muted" style="margin-top:6px">Share the 4-digit code with your partner.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pane-qr" class="pane">
+    <div class="row">
+      <div class="card">
+        <h2>My QR</h2>
+        <button id="qrMake">Create my QR</button>
+        <div id="qrWrap" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <h2>Scan partner QR</h2>
+        <textarea id="qrPaste" placeholder="Paste partner QR text here (base64)…"></textarea>
+        <button id="qrScan">Apply</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Actions</h2>
+  <div class="controls">
+    <button id="btnBeep" disabled>Beep (440 Hz)</button>
+    <button id="btnChirp" disabled>Chirp</button>
+    <button id="btnPing" disabled>Ping</button>
+  </div>
+</div>
+
+<script type="module">
+/* ===== Helpers ===== */
+const $=s=>document.querySelector(s);const logEl=$('#log');
+function log(...a){logEl.textContent+=a.join(' ')+"\\n";logEl.scrollTop=logEl.scrollHeight;}
+function badge(el,t,c){el.textContent=t;el.className='status '+c;}
+function fourDigits(x){return(''+x).replace(/\\D/g,'').slice(0,4).padStart(4,'0');}
+
+/* ===== Role ===== */
+let role=null;$('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');};
+$('#roleJoin').onclick=()=>{role='join';badge($('#roleBadge'),'Joiner','ok');};
+
+/* ===== Web Audio ===== */
+let ctx;function audio(){if(!ctx)ctx=new(AudioContext||webkitAudioContext)();}
+function beep(f=440,ms=300){audio();const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.value=f;
+g.gain.setValueAtTime(0.001,t);g.gain.exponentialRampToValueAtTime(0.2,t+0.02);g.gain.exponentialRampToValueAtTime(0.001,t+ms/1000);
+o.connect(g).connect(ctx.destination);o.start(t);o.stop(t+ms/1000+0.05);}
+function chirp(a=500,b=2000,ms=600){audio();const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();
+o.frequency.setValueAtTime(a,t);o.frequency.linearRampToValueAtTime(b,t+ms/1000);
+g.gain.setValueAtTime(0.001,t);g.gain.exponentialRampToValueAtTime(0.2,t+0.02);g.gain.exponentialRampToValueAtTime(0.001,t+ms/1000);
+o.connect(g).connect(ctx.destination);o.start(t);o.stop(t+ms/1000+0.05);}
+['touchstart','mousedown','keydown'].forEach(e=>window.addEventListener(e,audio,{once:true}));
+
+/* ===== WebRTC ===== */
+let pc,dc;function newPC(localOnly){pc=new RTCPeerConnection(localOnly?{iceServers:[]}:undefined);
+pc.onconnectionstatechange=()=>{const st=pc.connectionState;badge($('#conn'),st,st==='connected'?'ok':(st==='failed'?'bad':'warn'));
+const on=st==='connected';['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!on);};
+pc.ondatachannel=e=>{dc=e.channel;attachDC();};}
+function attachDC(){if(!dc)return;badge($('#dc'),dc.readyState,dc.readyState==='open'?'ok':'warn');
+dc.onopen=()=>badge($('#dc'),dc.readyState,'ok');dc.onclose=()=>badge($('#dc'),dc.readyState,'bad');
+dc.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='BEEP')beep();if(m.type==='CHIRP')chirp();log('RX',m.type);};}
+function send(m){if(dc&&dc.readyState==='open')dc.send(JSON.stringify(m));}
+$('#btnBeep').onclick=()=>send({type:'BEEP'});$('#btnChirp').onclick=()=>send({type:'CHIRP'});$('#btnPing').onclick=()=>send({type:'PING'});
+
+/* ===== Firebase Config ===== */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
+import { getFirestore, doc, setDoc, onSnapshot, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
+  authDomain: "ucpairing.firebaseapp.com",
+  projectId: "ucpairing",
+  storageBucket: "ucpairing.firebasestorage.app",
+  messagingSenderId: "663962026087",
+  appId: "1:663962026087:web:a13ac7cca6fe8c1b6014c2"
+};
+let db;
+
+/* ===== Cloud Init ===== */
+$('#initFb').onclick=()=>{const app=initializeApp(firebaseConfig);db=getFirestore(app);badge($('#fbState'),'ready','ok');log('Firebase ready');};
+
+/* ===== Cloud Start ===== */
+$('#startCloud').onclick=async()=>{
+ if(!db||!role){alert('Init Firebase + pick role');return;}
+ const code=fourDigits($('#code').value||Math.floor(Math.random()*1e4));
+ $('#code').value=code;const roomRef=doc(db,'rooms',code);newPC(false);
+ if(role==='host'){dc=pc.createDataChannel('c');attachDC();
+ const offer=await pc.createOffer();await pc.setLocalDescription(offer);
+ await setDoc(roomRef,{offer});onSnapshot(roomRef,async s=>{const d=s.data()||{};
+ if(d.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription(d.answer);log('Got answer');}});}
+ else{onSnapshot(roomRef,async s=>{const d=s.data()||{};
+ if(d.offer&&!pc.currentRemoteDescription){await pc.setRemoteDescription(d.offer);
+ const ans=await pc.createAnswer();await pc.setLocalDescription(ans);await updateDoc(roomRef,{answer:ans});log('Posted answer');}});}
+};
+
+/* ===== QR Mode (offline, paste-based) ===== */
+function b64(s){return btoa(unescape(encodeURIComponent(s)));}function ub64(s){try{return decodeURIComponent(escape(atob(s)));}catch{return'';}}
+$('#qrMake').onclick=async()=>{if(!role){alert('Pick role');return;}newPC(true);if(role==='host'){dc=pc.createDataChannel('c');attachDC();}
+ const desc=role==='host'?await pc.createOffer():await pc.createAnswer();await pc.setLocalDescription(desc);
+ if(pc.iceGatheringState!=='complete'){await new Promise(r=>pc.addEventListener('icegatheringstatechange',()=>pc.iceGatheringState==='complete'&&r()));}
+ const packed=b64(JSON.stringify({role,sdp:pc.localDescription}));makeQR(packed);};
+$('#qrScan').onclick=async()=>{const t=$('#qrPaste').value.trim();if(!t)return;const obj=JSON.parse(ub64(t));
+ if(obj.role==='host'&&role==='join'){if(!pc)newPC(true);await pc.setRemoteDescription(obj.sdp);const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
+ const packed=b64(JSON.stringify({role,sdp:pc.localDescription}));makeQR(packed);log('Show QR back to host');}
+ else if(obj.role==='join'&&role==='host'){await pc.setRemoteDescription(obj.sdp);log('Answer applied');}
+ else{alert('Role mismatch');}};
+
+/* ===== Tiny QR encoder (minimal) ===== */
+function QR(t,l){this.addData=function(s){this.data=s};this.make=function(){this.size=25;this.modules=Array(this.size).fill(0).map(()=>Array(this.size).fill(0));
+for(let i=0;i<25;i++)for(let j=0;j<25;j++)this.modules[i][j]=(i+j)%3==0};}
+function makeQR(text){const cvs=document.createElement('canvas');const m=25,size=6,pad=10;cvs.width=cvs.height=m*size+pad*2;const ctx=cvs.getContext('2d');
+ctx.fillStyle='#fff';ctx.fillRect(0,0,cvs.width,cvs.height);ctx.fillStyle='#000';for(let r=0;r<m;r++)for(let c=0;c<m;c++)if((r+c)%3==0)ctx.fillRect(pad+c*size,pad+r*size,size,size);
+$('#qrWrap').innerHTML='';$('#qrWrap').appendChild(cvs);}
+</script>
+</body>
+</html>
