@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UCKTT Pairing Test (WebRTC LAN, no server)</title>
+<style>
+  :root { font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  body { margin: 0; padding: 16px; background: #fafafa; color: #222; }
+  h1 { margin: 0 0 8px; font-size: 1.25rem; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .row { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  @media (min-width: 880px) { .row { grid-template-columns: 1fr 1fr; } }
+  textarea { width: 100%; height: 140px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  button { padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { padding: 6px 10px; border-radius: 6px; display: inline-block; font-size: 0.9rem; }
+  .ok { background: #e8f5e9; color: #1b5e20; }
+  .warn { background: #fff8e1; color: #795548; }
+  .bad { background: #ffebee; color: #b71c1c; }
+  .controls button { margin-right: 8px; margin-bottom: 8px; }
+  .muted { color:#666; font-size: 0.9rem; }
+  .tiny { font-size: 0.85rem; }
+  .pill { padding: 2px 8px; border-radius: 999px; background: #eee; display:inline-block; margin-right:6px; }
+</style>
+</head>
+<body>
+  <h1>UCKTT Pairing Test — WebRTC (local, no server)</h1>
+  <div class="card">
+    <div class="tiny muted">
+      Works fully offline on the same Wi-Fi using **WebRTC DataChannel** and manual copy/paste signaling.
+      Use HTTPS or localhost (browsers block WebRTC on <code>file://</code>).
+    </div>
+    <div style="margin-top:6px">
+      <span class="pill">Role: <strong id="roleLbl">None</strong></span>
+      <span class="pill">Conn: <strong id="connState">idle</strong></span>
+      <span class="pill">DC: <strong id="dcState">-</strong></span>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2 style="margin-top:0">1) Choose role</h2>
+      <button id="btnHost">I am Host (create offer)</button>
+      <button id="btnJoin">I am Joiner (answer offer)</button>
+      <div class="tiny muted" style="margin-top:8px">
+        Host starts the pairing. Joiner responds. Either side can send actions once connected.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">2) Status</h2>
+      <div id="statusBox" class="status warn">Not started</div>
+      <div id="log" class="tiny muted" style="margin-top:8px; max-height:160px; overflow:auto; white-space:pre-wrap;"></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card" id="hostPanel" style="display:none">
+      <h2 style="margin-top:0">Host</h2>
+      <button id="btnCreateOffer">Create Offer</button>
+      <div class="tiny muted" style="margin:6px 0 4px">Copy & share this Offer with the Joiner:</div>
+      <textarea id="taOffer" readonly placeholder="Offer will appear here…"></textarea>
+      <div class="tiny muted" style="margin:6px 0 4px">Paste Joiner’s Answer here, then click Apply:</div>
+      <textarea id="taAnswerFromJoiner" placeholder="Paste answer JSON…"></textarea>
+      <button id="btnApplyAnswer">Apply Answer</button>
+    </div>
+
+    <div class="card" id="joinPanel" style="display:none">
+      <h2 style="margin-top:0">Joiner</h2>
+      <div class="tiny muted" style="margin:6px 0 4px">Paste Host’s Offer, then click Create Answer:</div>
+      <textarea id="taOfferFromHost" placeholder="Paste offer JSON…"></textarea>
+      <button id="btnCreateAnswer">Create Answer</button>
+      <div class="tiny muted" style="margin:6px 0 4px">Copy & send this Answer back to the Host:</div>
+      <textarea id="taAnswerOut" readonly placeholder="Answer will appear here…"></textarea>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">3) Actions (sent to the other page)</h2>
+    <div class="controls">
+      <button id="btnBeep" disabled>Send Beep (440 Hz, 300 ms)</button>
+      <button id="btnChirp" disabled>Send Chirp (500→2000 Hz, 600 ms)</button>
+      <button id="btnPing" disabled>Send Ping</button>
+    </div>
+    <div class="tiny muted">On receive, this page will **play the sound** and log the action.</div>
+  </div>
+
+<script>
+(() => {
+  // ---- Utilities ----
+  const $ = sel => document.querySelector(sel);
+  const logEl = $('#log');
+  const statusBox = $('#statusBox');
+  function log(...args){ const s = args.map(a => typeof a==='string'? a : JSON.stringify(a)).join(' '); logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+  function setStatus(text, cls='warn'){ statusBox.textContent = text; statusBox.className = 'status ' + cls; }
+  function setLbl(id, text){ document.getElementById(id).textContent = text; }
+
+  // ---- Web Audio (no external files) ----
+  let audioCtx = null;
+  function ensureAudio(){ if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+  async function playBeep(freq=440, ms=300){
+    ensureAudio();
+    const t0 = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.2, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + ms/1000);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + ms/1000 + 0.05);
+  }
+  async function playChirp(fStart=500, fEnd=2000, ms=600){
+    ensureAudio();
+    const t0 = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(fStart, t0);
+    osc.frequency.linearRampToValueAtTime(fEnd, t0 + ms/1000);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.2, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + ms/1000);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + ms/1000 + 0.05);
+  }
+
+  // ---- WebRTC bits (local-only, no STUN/TURN) ----
+  let pc = null, dc = null;
+  let role = null; // 'host' or 'join'
+
+  function newPC() {
+    pc = new RTCPeerConnection({ iceServers: [] }); // LAN-only; no internet servers
+    pc.onconnectionstatechange = () => {
+      setLbl('connState', pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        $('.controls #btnBeep').disabled = false;
+        $('.controls #btnChirp').disabled = false;
+        $('.controls #btnPing').disabled = false;
+        setStatus('Connected', 'ok');
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        setStatus('Disconnected / Failed', 'bad');
+      }
+    };
+    pc.onicegatheringstatechange = () => {
+      // When gathering completes, localDescription will contain host candidates.
+      // This makes copy/paste simpler—no separate candidate exchange needed.
+      log('ICE gathering:', pc.iceGatheringState);
+    };
+    pc.onicecandidateerror = (e) => log('ICE candidate error', e.errorText || '');
+    pc.ondatachannel = (ev) => {
+      dc = ev.channel;
+      attachDC();
+    };
+  }
+
+  function attachDC() {
+    if (!dc) return;
+    setLbl('dcState', dc.readyState);
+    dc.onopen = () => { setLbl('dcState', dc.readyState); setStatus('Data channel open', 'ok'); };
+    dc.onclose = () => { setLbl('dcState', dc.readyState); setStatus('Data channel closed', 'bad'); };
+    dc.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        handleMsg(msg);
+      } catch (e) {
+        log('Bad message:', ev.data);
+      }
+    };
+  }
+
+  function send(msg) {
+    if (!dc || dc.readyState !== 'open') return;
+    dc.send(JSON.stringify({ v:1, t: Date.now(), ...msg }));
+  }
+
+  function handleMsg(msg) {
+    log('RX', msg.type, msg);
+    if (msg.type === 'BEEP') playBeep(msg.freq ?? 440, msg.ms ?? 300);
+    if (msg.type === 'CHIRP') playChirp(msg.fStart ?? 500, msg.fEnd ?? 2000, msg.ms ?? 600);
+    if (msg.type === 'PING') {/* noop */}
+  }
+
+  // Serialize/parse descriptions safely
+  function pack(desc){ return JSON.stringify(desc); }
+  function unpack(text){ return JSON.parse(text); }
+
+  // ---- UI wiring ----
+  $('#btnHost').onclick = () => {
+    role = 'host';
+    setLbl('roleLbl', 'Host');
+    $('#hostPanel').style.display = '';
+    $('#joinPanel').style.display = 'none';
+    setStatus('Host selected. Click “Create Offer”.');
+    newPC();
+    // Host creates DataChannel proactively
+    dc = pc.createDataChannel('ucktt');
+    attachDC();
+  };
+
+  $('#btnJoin').onclick = () => {
+    role = 'join';
+    setLbl('roleLbl', 'Joiner');
+    $('#hostPanel').style.display = 'none';
+    $('#joinPanel').style.display = '';
+    setStatus('Joiner selected. Paste Host offer and click “Create Answer”.');
+    newPC();
+  };
+
+  // Host flow
+  $('#btnCreateOffer').onclick = async () => {
+    if (!pc) return;
+    setStatus('Creating offer…');
+    const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+    await pc.setLocalDescription(offer);
+
+    // Wait for ICE gathering to complete so SDP includes host candidates
+    if (pc.iceGatheringState !== 'complete') {
+      await new Promise(resolve => {
+        const onChange = () => {
+          if (pc.iceGatheringState === 'complete') {
+            pc.removeEventListener('icegatheringstatechange', onChange);
+            resolve();
+          }
+        };
+        pc.addEventListener('icegatheringstatechange', onChange);
+      });
+    }
+    $('#taOffer').value = pack(pc.localDescription);
+    setStatus('Offer ready. Share it with Joiner.');
+  };
+
+  $('#btnApplyAnswer').onclick = async () => {
+    const txt = $('#taAnswerFromJoiner').value.trim();
+    if (!txt) return alert('Paste the Joiner answer first.');
+    try {
+      const answer = unpack(txt);
+      await pc.setRemoteDescription(answer);
+      setStatus('Answer applied. Connecting…');
+    } catch (e) {
+      console.error(e);
+      alert('Invalid answer JSON.');
+    }
+  };
+
+  // Joiner flow
+  $('#btnCreateAnswer').onclick = async () => {
+    const txt = $('#taOfferFromHost').value.trim();
+    if (!txt) return alert('Paste the Host offer first.');
+    try {
+      const offer = unpack(txt);
+      await pc.setRemoteDescription(offer);
+      setStatus('Offer loaded. Creating answer…');
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      // Wait for ICE gather complete
+      if (pc.iceGatheringState !== 'complete') {
+        await new Promise(resolve => {
+          const onChange = () => {
+            if (pc.iceGatheringState === 'complete') {
+              pc.removeEventListener('icegatheringstatechange', onChange);
+              resolve();
+            }
+          };
+          pc.addEventListener('icegatheringstatechange', onChange);
+        });
+      }
+      $('#taAnswerOut').value = pack(pc.localDescription);
+      setStatus('Answer ready. Send it back to Host.');
+    } catch (e) {
+      console.error(e);
+      alert('Invalid offer JSON.');
+    }
+  };
+
+  // Actions
+  $('#btnBeep').onclick  = () => { send({type:'BEEP', freq:440, ms:300}); };
+  $('#btnChirp').onclick = () => { send({type:'CHIRP', fStart:500, fEnd:2000, ms:600}); };
+  $('#btnPing').onclick  = () => { send({type:'PING'}); };
+
+  // UX: activate audio context on first user gesture (mobile auto-play policies)
+  ['touchstart','mousedown','keydown'].forEach(evt =>
+    window.addEventListener(evt, () => { if (!audioCtx) ensureAudio(); }, { once:true })
+  );
+})();
+</script>
+</body>
+</html>
