@@ -20,8 +20,9 @@
   #log{font-size:.86rem;max-height:180px;overflow:auto;white-space:pre-wrap}
   canvas{image-rendering:pixelated}
 </style>
-<!-- Camera QR decoder (works offline over HTTPS / localhost) -->
-<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+<!-- Load REAL offline libraries from local copies in your repo -->
+<script src="qrcode.js"></script>              <!-- from qrcode-generator -->
+<script src="html5-qrcode.min.js"></script>    <!-- from html5-qrcode -->
 </head>
 <body>
 <h1>Pairing Demo — 6-Digit Cloud + QR (Offline) + Camera Scan</h1>
@@ -282,7 +283,7 @@ $('#qrScan').onclick = async ()=>{
   }
 };
 
-/* ================= Camera QR scanning ================= */
+/* ================= Camera QR scanning (offline library) ================= */
 let scanner=null;
 $('#scanStart').onclick = ()=>{
   try{
@@ -307,41 +308,32 @@ $('#scanStop').onclick = ()=>{
   }
 };
 
-/* ================= Real QR encoder (embedded, MIT-like) ================= */
-(function(){function P(a){this.mode=K.MODE_8BIT_BYTE;this.data=a}
-function Q(a,b){this.typeNumber=a;this.errorCorrectLevel=b;this.modules=null;this.moduleCount=0;this.dataList=[];this.dataCache=null}
-const K={PAD0:236,PAD1:17,MODE_8BIT_BYTE:4};
-Q.prototype={
- addData:function(a){this.dataList.push(new P(a));this.dataCache=null},
- isDark:function(r,c){if(!this.modules||r<0||this.moduleCount<=r||c<0||this.moduleCount<=c)throw Error(r+","+c);return this.modules[r][c]},
- getModuleCount:function(){return this.moduleCount},
- make:function(){this.typeNumber=4;this.moduleCount=33;this.modules=Array(this.moduleCount);
-  for(let r=0;r<this.moduleCount;r++){this.modules[r]=Array(this.moduleCount);for(let c=0;c<this.moduleCount;c++)this.modules[r][c]=null}
-  this._pos(0,0); this._pos(this.moduleCount-7,0); this._pos(0,this.moduleCount-7);
-  this._map(this._createData());
- },
- _pos:function(x,y){for(let r=-1;r<=7;r++) if(!(x+r<=-1||this.moduleCount<=x+r))
-  for(let c=-1;c<=7;c++) if(!(y+c<=-1||this.moduleCount<=y+c))
-    this.modules[x+r][y+c]=(0<=r&&r<=6&&(c==0||c==6))||(0<=c&&c<=6&&(r==0||r==6))||(2<=r&&r<=4&&2<=c&&c<=4)},
- _map:function(bytes){let i=0,row=this.moduleCount-1,col=this.moduleCount-1,dir=-1;
-  for(;col>0;col-=2){if(col===6)col--;for(;;){for(let c=0;c<2;c++) if(this.modules[row][col-c]===null){
-     const bit = i<bytes.length ? ( (bytes[i>>>3] >>> (7-(i%8)) ) & 1) : 0; this.modules[row][col-c]=!!bit; i++; }
-   row+=dir; if(row<0||row>=this.moduleCount){row-=dir; dir=-dir; break;}}}
- },
- _createData:function(){let out=[],dl=this.dataList.length;
-  for(let i=0;i<dl;i++){const d=this.dataList[i].data; for(let j=0;j<d.length;j++) out.push(d.charCodeAt(j));}
-  while(out.length+2<=80){out.push(K.PAD0,K.PAD1);} while(out.length<80){out.push(K.PAD0);} return out;
-}};
-window.QR=Q;})();
+/* ================= REAL QR generator (qrcode-generator) ================= */
 function makeQR(text){
-  if(!window.QR){ console.error('[QR] encoder missing'); $('#qrWrap').textContent='QR library missing'; return; }
-  const qr=new QR(4,0); qr.addData(text); qr.make();
-  const m=qr.getModuleCount(), size=6, pad=10;
-  const cvs=document.createElement('canvas'); cvs.width=cvs.height=m*size+pad*2; const ctx=cvs.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cvs.width,cvs.height); ctx.fillStyle='#000';
-  let dark=0; for(let r=0;r<m;r++) for(let c=0;c<m;c++) if(qr.isDark(r,c)){dark++; ctx.fillRect(pad+c*size,pad+r*size,size,size);}
-  console.log('[QR] modules',m,'dark',dark,'density', (dark/(m*m)).toFixed(3));
-  $('#qrWrap').innerHTML=''; $('#qrWrap').appendChild(cvs);
+  try{
+    const qr = qrcode(0, 'M');  // auto version, medium EC
+    qr.addData(text);
+    qr.make();
+
+    const count = qr.getModuleCount();
+    const size = 6; // pixel scale
+    const cvs = document.createElement('canvas');
+    cvs.width = cvs.height = count * size;
+    const ctx = cvs.getContext('2d');
+
+    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,cvs.width,cvs.height);
+    ctx.fillStyle = '#000';
+    for(let r=0;r<count;r++){
+      for(let c=0;c<count;c++){
+        if(qr.isDark(r,c)) ctx.fillRect(c*size, r*size, size, size);
+      }
+    }
+    $('#qrWrap').innerHTML='';
+    $('#qrWrap').appendChild(cvs);
+  }catch(e){
+    console.error('[QR] generation failed', e);
+    $('#qrWrap').textContent = 'QR generation failed: ' + e;
+  }
 }
 </script>
 </body>
