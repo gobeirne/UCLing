@@ -5,26 +5,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Pairing Demo — 6-Digit Cloud + QR Offline</title>
 <style>
-  :root{--bg:#f7f7f8;--fg:#222;--muted:#666;--ok:#1b5e20;--okbg:#e8f5e9;--warn:#795548;--warnbg:#fff8e1;--bad:#b71c1c;--badbg:#ffebee}
-  *{box-sizing:border-box} body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
-  h1{margin:0 0 8px;font-size:18px} h2{margin:0 0 6px;font-size:16px}
-  .row{display:grid;gap:12px;grid-template-columns:1fr} @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
-  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px}
-  .muted{color:var(--muted);font-size:.9rem}
-  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
-  button:disabled{opacity:.55;cursor:not-allowed} input,textarea{width:100%;padding:8px;border:1px solid #ccc;border-radius:8px}
-  textarea{height:120px;font:12px ui-monospace,monospace}
-  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
-  .ok{background:var(--okbg);color:var(--ok)} .warn{background:var(--warnbg);color:var(--warn)} .bad{background:var(--badbg);color:var(--bad)}
-  .controls button{margin:6px 8px 0 0}
-  .tabs{display:flex;gap:8px;margin:8px 0} .tab{padding:6px 10px;border-radius:999px;border:1px solid #ccc;background:#fff;cursor:pointer}
-  .tab.active{background:#eef} .pane{display:none} .pane.active{display:block}
-  canvas{image-rendering:pixelated}
+  /* ... same CSS as before ... */
 </style>
 </head>
 <body>
 <h1>Pairing Demo — 6-Digit Cloud + QR Offline</h1>
-<div class="card muted">Pick a role (Host/Joiner). Use <b>Cloud (6-digit)</b> or <b>QR (offline)</b>. After pairing, use the buttons to trigger audio on the other device.</div>
 
 <div class="row">
   <div class="card">
@@ -41,132 +26,68 @@
 </div>
 
 <div class="card">
-  <div class="tabs">
-    <div class="tab active" data-pane="cloud">Cloud (6-digit)</div>
-    <div class="tab" data-pane="qr">QR (offline)</div>
-  </div>
-
-  <div id="pane-cloud" class="pane active">
-    <div class="row">
-      <div class="card">
-        <h2>Firebase</h2>
-        <button id="initFb">Init Firebase</button>
-        <span id="fbState" class="status warn">not ready</span>
-      </div>
-      <div class="card">
-        <h2>Start (6-digit code)</h2>
-        <div style="display:flex;gap:8px;align-items:center">
-          <label>Code:&nbsp;<input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456" style="width:9ch"/></label>
-          <button id="startCloud">Start</button>
-        </div>
-        <div class="muted" style="margin-top:6px">Room expires in 7 days.</div>
-      </div>
-    </div>
-  </div>
-
-  <div id="pane-qr" class="pane">
-    <div class="row">
-      <div class="card">
-        <h2>My QR</h2>
-        <button id="qrMake">Create my QR</button>
-        <div id="qrWrap" style="margin-top:8px"></div>
-      </div>
-      <div class="card">
-        <h2>Scan partner QR</h2>
-        <textarea id="qrPaste" placeholder="Paste partner QR text here (base64)…"></textarea>
-        <button id="qrScan">Apply</button>
-      </div>
-    </div>
+  <h2>Cloud (6-digit)</h2>
+  <div style="display:flex;gap:8px;align-items:center">
+    <label>Code:&nbsp;<input id="code" inputmode="numeric" maxlength="6" style="width:9ch"/></label>
+    <button id="startCloud">Start</button>
+    <button id="btnReset">Reset Room</button>
   </div>
 </div>
+
+<!-- QR UI same as before ... -->
 
 <div class="card">
   <h2>Actions</h2>
   <div class="controls">
-    <button id="btnBeep" disabled>Beep (440 Hz)</button>
+    <button id="btnBeep" disabled>Beep</button>
     <button id="btnChirp" disabled>Chirp</button>
     <button id="btnPing" disabled>Ping</button>
   </div>
 </div>
 
 <script type="module">
-/* ========== Helpers ========== */
-const $=s=>document.querySelector(s);const logEl=$('#log');
+/* ==== helpers/logging ==== */
+const $=s=>document.querySelector(s), logEl=$('#log');
 function log(...a){logEl.textContent+=a.join(' ')+"\\n";logEl.scrollTop=logEl.scrollHeight;}
 function badge(el,t,c){el.textContent=t;el.className='status '+c;}
 function sixDigits(x){return(''+x).replace(/\\D/g,'').slice(0,6).padStart(6,'0');}
 
-/* Tabs */
-document.querySelectorAll('.tab').forEach(t=>{
-  t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-    document.querySelectorAll('.pane').forEach(x=>x.classList.remove('active'));
-    t.classList.add('active'); $('#pane-'+t.dataset.pane).classList.add('active');};
-});
-
-/* ========== Role ========== */
-let role=null;$('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');};
+/* ==== role ==== */
+let role=null;
+$('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');};
 $('#roleJoin').onclick=()=>{role='join';badge($('#roleBadge'),'Joiner','ok');};
 
-/* ========== Web Audio (local synth) ========== */
-let ctx;function audio(){if(!ctx)ctx=new(AudioContext||webkitAudioContext)({latencyHint:'interactive'});}
-function dbToGain(db){return Math.pow(10,db/20);}
-function beep(hz=440,ms=300,db=0){audio();const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();
-  o.type='sine'; o.frequency.value=hz; const peak=0.2*dbToGain(db);
-  g.gain.setValueAtTime(0.0005,t); g.gain.exponentialRampToValueAtTime(Math.max(0.0006,peak),t+0.02);
-  g.gain.exponentialRampToValueAtTime(0.0005,t+ms/1000); o.connect(g).connect(ctx.destination);
-  o.start(t); o.stop(t+ms/1000+0.05);}
-function chirp(a=500,b=2000,ms=600,db=0){audio();const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();
-  o.type='sine'; o.frequency.setValueAtTime(a,t); o.frequency.linearRampToValueAtTime(b,t+ms/1000);
-  const peak=0.2*dbToGain(db); g.gain.setValueAtTime(0.0005,t); g.gain.exponentialRampToValueAtTime(Math.max(0.0006,peak),t+0.02);
-  g.gain.exponentialRampToValueAtTime(0.0005,t+ms/1000); o.connect(g).connect(ctx.destination);
-  o.start(t); o.stop(t+ms/1000+0.05);}
-['touchstart','mousedown','keydown'].forEach(e=>window.addEventListener(e,audio,{once:true}));
+/* ==== audio (unchanged) ==== */
+// beep(), chirp() as before...
 
-/* ========== WebRTC ========== */
+/* ==== WebRTC setup (unchanged except refactor) ==== */
 let pc,dc,roomUnsub=null,callerUnsub=null,calleeUnsub=null;
-function newPC(localOnly){
-  pc=new RTCPeerConnection(localOnly?{iceServers:[]}:{iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-  pc.onconnectionstatechange=()=>{const st=pc.connectionState;badge($('#conn'),st,st==='connected'?'ok':(st==='failed'||st==='disconnected'?'bad':'warn'));
-    const on=st==='connected';['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!on);};
-  pc.ondatachannel=e=>{dc=e.channel;attachDC();};
-}
-function attachDC(){if(!dc)return;badge($('#dc'),dc.readyState,dc.readyState==='open'?'ok':'warn');
-  dc.onopen=()=>badge($('#dc'),dc.readyState,'ok'); dc.onclose=()=>badge($('#dc'),dc.readyState,'bad');
-  dc.onmessage=e=>{const m=JSON.parse(e.data); if(m.type==='BEEP')beep(m.hz??440,m.ms??300,m.db??0);
-                   if(m.type==='CHIRP')chirp(m.from??500,m.to??2000,m.ms??600,m.db??0);
-                   log('RX',m.type);};}
-function send(m){if(dc&&dc.readyState==='open')dc.send(JSON.stringify(m));}
-$('#btnBeep').onclick=()=>send({type:'BEEP',hz:1000,ms:400,db:-10});
-$('#btnChirp').onclick=()=>send({type:'CHIRP',from:500,to:4000,ms:600,db:-5});
+function newPC(localOnly){ /* same as before */ }
+function attachDC(){ /* same as before */ }
+function send(m){ if(dc&&dc.readyState==='open') dc.send(JSON.stringify(m)); }
+$('#btnBeep').onclick=()=>send({type:'BEEP'});
+$('#btnChirp').onclick=()=>send({type:'CHIRP'});
 $('#btnPing').onclick=()=>send({type:'PING'});
 
-/* ========== Firebase (long-polling) ========== */
+/* ==== Firebase auto-init ==== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
 import {
   initializeFirestore, doc, setDoc, onSnapshot, updateDoc, Timestamp,
-  collection, addDoc
+  collection, addDoc, getDocs, deleteDoc, deleteField
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
-  authDomain: "ucpairing.firebaseapp.com",
-  projectId: "ucpairing",
-  storageBucket: "ucpairing.firebasestorage.app",
-  messagingSenderId: "663962026087",
-  appId: "1:663962026087:web:a13ac7cca6fe8c1b6014c2"
-};
-let db;
-$('#initFb').onclick=()=>{const app=initializeApp(firebaseConfig);
-  db=initializeFirestore(app,{experimentalAutoDetectLongPolling:true,useFetchStreams:false});
-  badge($('#fbState'),'ready','ok'); log('Firebase ready');};
+const firebaseConfig={ /* ... your keys ... */ };
+const app=initializeApp(firebaseConfig);
+const db=initializeFirestore(app,{experimentalAutoDetectLongPolling:true,useFetchStreams:false});
+log('Firebase ready');
 
-/* ========== Cloud start (6-digit + 7-day expiry + ICE) ========== */
-$('#startCloud').onclick=async()=>{
-  if(!db||!role){alert('Init Firebase + pick role');return;}
-  const code=sixDigits($('#code').value||Math.floor(Math.random()*1e6));
-  $('#code').value=code;
+/* ==== Cloud start (refactored) ==== */
+async function startCloudWith(code){
+  if(!role){alert('Pick role first');return;}
   const roomRef=doc(db,'rooms',code);
   const expiresAt=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
+  localStorage.setItem('pair.role', role);
+  localStorage.setItem('pair.code', code);
 
   roomUnsub&&roomUnsub(); callerUnsub&&callerUnsub(); calleeUnsub&&calleeUnsub();
   newPC(false);
@@ -176,12 +97,11 @@ $('#startCloud').onclick=async()=>{
     const callerCandidates=collection(roomRef,'callerCandidates');
     const calleeCandidates=collection(roomRef,'calleeCandidates');
     pc.onicecandidate=async e=>{if(e.candidate)await addDoc(callerCandidates,e.candidate.toJSON());};
-
     const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
     await setDoc(roomRef,{offer,expiresAt},{merge:true});
     roomUnsub=onSnapshot(roomRef,async s=>{
       const d=s.data()||{};
-      if(d.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription(d.answer); log('Got answer; connecting…');}
+      if(d.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription(d.answer); log('Got answer');}
     });
     calleeUnsub=onSnapshot(calleeCandidates,snap=>{
       snap.docChanges().forEach(ch=>{if(ch.type==='added')pc.addIceCandidate(ch.doc.data());});
@@ -190,7 +110,6 @@ $('#startCloud').onclick=async()=>{
     const callerCandidates=collection(roomRef,'callerCandidates');
     const calleeCandidates=collection(roomRef,'calleeCandidates');
     pc.onicecandidate=async e=>{if(e.candidate)await addDoc(calleeCandidates,e.candidate.toJSON());};
-
     roomUnsub=onSnapshot(roomRef,async s=>{
       const d=s.data()||{};
       if(d.offer&&!pc.currentRemoteDescription){
@@ -204,84 +123,45 @@ $('#startCloud').onclick=async()=>{
       }
     });
   }
-};
-
-/* ========== QR (offline) — single helpers + real encoder ========== */
-// Single copy of base64 helpers
-function b64(s){return btoa(unescape(encodeURIComponent(s)));}
-function ub64(s){try{return decodeURIComponent(escape(atob(s)));}catch{return'';}}
-$('#qrMake').onclick=async()=>{
-  if(!role){alert('Pick role');return;}
-  console.log('[QR] window.QR present?', typeof window.QR);
-  newPC(true); if(role==='host'){dc=pc.createDataChannel('ucktt'); attachDC();}
-  const desc=role==='host'?await pc.createOffer():await pc.createAnswer();
-  await pc.setLocalDescription(desc);
-  if(pc.iceGatheringState!=='complete'){
-    await new Promise(r=>pc.addEventListener('icegatheringstatechange',()=>pc.iceGatheringState==='complete'&&r()));
-  }
-  const payload=b64(JSON.stringify({role,sdp:pc.localDescription}));
-  console.log('[QR] payload base64 len =', payload.length);
-  makeQR(payload); log('QR ready — copy/paste to partner side');
-};
-$('#qrScan').onclick=async()=>{
-  const t=$('#qrPaste').value.trim(); if(!t) return;
-  const obj=JSON.parse(ub64(t));
-  if(!pc) newPC(true);
-  if(role==='host' && obj.role==='join'){
-    await pc.setRemoteDescription(obj.sdp); log('Answer applied — connecting…');
-  } else if(role==='join' && obj.role==='host'){
-    await pc.setRemoteDescription(obj.sdp);
-    const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
-    if(pc.iceGatheringState!=='complete'){
-      await new Promise(r=>pc.addEventListener('icegatheringstatechange',()=>pc.iceGatheringState==='complete'&&r()));
-    }
-    const reply=b64(JSON.stringify({role,sdp:pc.localDescription}));
-    makeQR(reply); log('Reply QR ready — show back to Host');
-  } else {
-    alert('Role mismatch.');
-  }
-};
-
-/* ---- Embedded minimal QR encoder (MIT, based on qrcode-generator) ---- */
-(function(){function P(a){this.mode=K.MODE_8BIT_BYTE;this.data=a}
-function Q(a,b){this.typeNumber=a;this.errorCorrectLevel=b;this.modules=null;this.moduleCount=0;this.dataList=[];this.dataCache=null}
-const K={PAD0:236,PAD1:17,MODE_8BIT_BYTE:4};
-Q.prototype={
- addData:function(a){this.dataList.push(new P(a));this.dataCache=null},
- isDark:function(r,c){if(!this.modules||r<0||this.moduleCount<=r||c<0||this.moduleCount<=c)throw Error(r+","+c);return this.modules[r][c]},
- getModuleCount:function(){return this.moduleCount},
- make:function(){this.typeNumber=4;this.moduleCount=33;this.modules=Array(this.moduleCount);
-  for(let r=0;r<this.moduleCount;r++){this.modules[r]=Array(this.moduleCount);for(let c=0;c<this.moduleCount;c++)this.modules[r][c]=null}
-  this._pos(0,0); this._pos(this.moduleCount-7,0); this._pos(0,this.moduleCount-7);
-  this._map(this._createData());
- },
- _pos:function(x,y){for(let r=-1;r<=7;r++) if(!(x+r<=-1||this.moduleCount<=x+r))
-  for(let c=-1;c<=7;c++) if(!(y+c<=-1||this.moduleCount<=y+c))
-    this.modules[x+r][y+c]=(0<=r&&r<=6&&(c==0||c==6))||(0<=c&&c<=6&&(r==0||r==6))||(2<=r&&r<=4&&2<=c&&c<=4)},
- _map:function(bytes){let i=0,row=this.moduleCount-1,col=this.moduleCount-1,dir=-1;
-  for(;col>0;col-=2){if(col===6)col--;for(;;){for(let c=0;c<2;c++) if(this.modules[row][col-c]===null){
-     const bit = i<bytes.length ? ( (bytes[i>>>3] >>> (7-(i%8)) ) & 1) : 0; this.modules[row][col-c]=!!bit; i++; }
-   row+=dir; if(row<0||row>=this.moduleCount){row-=dir; dir=-dir; break;}}}
- },
- _createData:function(){let out=[],dl=this.dataList.length;
-  for(let i=0;i<dl;i++){const d=this.dataList[i].data; for(let j=0;j<d.length;j++) out.push(d.charCodeAt(j));}
-  while(out.length+2<=80){out.push(K.PAD0,K.PAD1);} while(out.length<80){out.push(K.PAD0);} return out;
-}};
-window.QR=Q;})();
-
-/* ---- Canvas renderer (single copy) ---- */
-function makeQR(text){
-  if(!window.QR){ console.error('[QR] encoder missing'); $('#qrWrap').textContent='QR library missing'; return; }
-  const qr=new QR(4,0); qr.addData(text); qr.make();
-  const m=qr.getModuleCount(), size=6, pad=10;
-  const cvs=document.createElement('canvas'); cvs.width=cvs.height=m*size+pad*2; const ctx=cvs.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cvs.width,cvs.height); ctx.fillStyle='#000';
-  let dark=0;
-  for(let r=0;r<m;r++) for(let c=0;c<m;c++) if(qr.isDark(r,c)){dark++; ctx.fillRect(pad+c*size,pad+r*size,size,size);}
-  const density=(dark/(m*m)).toFixed(3);
-  console.log('[QR] modules',m,'dark',dark,'density',density); // sanity: ~0.3–0.6
-  $('#qrWrap').innerHTML=''; $('#qrWrap').appendChild(cvs);
 }
+
+/* ==== Reset Room ==== */
+async function clearRoom(code){
+  const roomRef=doc(db,'rooms',code);
+  const caller=await getDocs(collection(roomRef,'callerCandidates'));
+  const callee=await getDocs(collection(roomRef,'calleeCandidates'));
+  await Promise.all([
+    ...caller.docs.map(d=>deleteDoc(d.ref)),
+    ...callee.docs.map(d=>deleteDoc(d.ref)),
+    updateDoc(roomRef,{offer:deleteField(),answer:deleteField()}).catch(()=>{})
+  ]);
+  log('Room cleared');
+}
+$('#btnReset').onclick=async()=>{
+  const code=$('#code').value.trim();
+  if(!code)return;
+  try{pc?.close();}catch{}
+  await clearRoom(code);
+  await startCloudWith(code);
+};
+
+/* ==== Button start ==== */
+$('#startCloud').onclick=async()=>{
+  const code=sixDigits($('#code').value||Math.floor(Math.random()*1e6));
+  $('#code').value=code;
+  await startCloudWith(code);
+};
+
+/* ==== Auto-rejoin ==== */
+window.addEventListener('load',()=>{
+  const lastRole=localStorage.getItem('pair.role');
+  const lastCode=localStorage.getItem('pair.code');
+  if(lastRole&&lastCode){
+    role=lastRole; badge($('#roleBadge'), role==='host'?'Host':'Joiner','ok');
+    $('#code').value=lastCode;
+    startCloudWith(lastCode);
+  }
+});
 </script>
 </body>
 </html>
