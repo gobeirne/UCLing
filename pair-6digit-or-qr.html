@@ -3,13 +3,28 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Pairing Demo — 6-Digit Cloud + QR Offline</title>
+<title>Pairing Demo — 6-Digit Cloud + QR (Offline) + Camera Scan</title>
 <style>
-  /* ... same CSS as before ... */
+  :root{--bg:#f7f7f8;--fg:#222;--muted:#666;--ok:#1b5e20;--okbg:#e8f5e9;--warn:#795548;--warnbg:#fff8e1;--bad:#b71c1c;--badbg:#ffebee}
+  body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  h1{margin:0 0 12px;font-size:18px}
+  .row{display:grid;gap:12px;grid-template-columns:1fr} @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px;margin:10px 0}
+  .muted{color:var(--muted);font-size:.9rem}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
+  textarea{width:100%;height:110px;font:12px ui-monospace,monospace}
+  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
+  .ok{background:var(--okbg);color:var(--ok)} .warn{background:var(--warnbg);color:var(--warn)} .bad{background:var(--badbg);color:var(--bad)}
+  #log{font-size:.86rem;max-height:180px;overflow:auto;white-space:pre-wrap}
+  canvas{image-rendering:pixelated}
 </style>
+<!-- Camera QR decoder (works offline over HTTPS / localhost) -->
+<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 </head>
 <body>
-<h1>Pairing Demo — 6-Digit Cloud + QR Offline</h1>
+<h1>Pairing Demo — 6-Digit Cloud + QR (Offline) + Camera Scan</h1>
 
 <div class="row">
   <div class="card">
@@ -21,73 +36,141 @@
   <div class="card">
     <h2>Status</h2>
     <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
-    <div id="log" class="muted" style="margin-top:8px;max-height:180px;overflow:auto;white-space:pre-wrap"></div>
+    <div id="log" class="muted"></div>
   </div>
 </div>
 
 <div class="card">
   <h2>Cloud (6-digit)</h2>
-  <div style="display:flex;gap:8px;align-items:center">
-    <label>Code:&nbsp;<input id="code" inputmode="numeric" maxlength="6" style="width:9ch"/></label>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <label>Code: <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" style="width:9ch"/></label>
     <button id="startCloud">Start</button>
     <button id="btnReset">Reset Room</button>
+    <span class="muted">Rooms auto-expire in 7 days.</span>
   </div>
 </div>
 
-<!-- QR UI same as before ... -->
+<div class="card">
+  <h2>QR (offline)</h2>
+  <div class="row">
+    <div class="card">
+      <h3>Make & show my QR</h3>
+      <button id="qrMake">Create my QR</button>
+      <div id="qrWrap" style="margin-top:8px"></div>
+      <div class="muted">Show this to partner. Works without internet.</div>
+    </div>
+    <div class="card">
+      <h3>Scan partner QR</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <button id="scanStart">Start Camera Scan</button>
+        <button id="scanStop">Stop</button>
+      </div>
+      <div id="reader" style="width:320px;max-width:100%;"></div>
+      <div class="muted" style="margin:8px 0">…or paste the QR text:</div>
+      <textarea id="qrPaste" placeholder="Paste partner QR text (base64)…"></textarea>
+      <button id="qrScan">Apply</button>
+    </div>
+  </div>
+</div>
 
 <div class="card">
   <h2>Actions</h2>
-  <div class="controls">
-    <button id="btnBeep" disabled>Beep</button>
-    <button id="btnChirp" disabled>Chirp</button>
-    <button id="btnPing" disabled>Ping</button>
-  </div>
+  <button id="btnBeep" disabled>Beep (440 Hz)</button>
+  <button id="btnChirp" disabled>Chirp</button>
+  <button id="btnPing" disabled>Ping</button>
 </div>
 
 <script type="module">
-/* ==== helpers/logging ==== */
+/* ================= Helpers ================= */
 const $=s=>document.querySelector(s), logEl=$('#log');
 function log(...a){logEl.textContent+=a.join(' ')+"\\n";logEl.scrollTop=logEl.scrollHeight;}
 function badge(el,t,c){el.textContent=t;el.className='status '+c;}
 function sixDigits(x){return(''+x).replace(/\\D/g,'').slice(0,6).padStart(6,'0');}
+function b64(s){return btoa(unescape(encodeURIComponent(s)));} 
+function ub64(s){try{return decodeURIComponent(escape(atob(s)));}catch{return'';}}
 
-/* ==== role ==== */
+/* ================= Role ================= */
 let role=null;
 $('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');};
 $('#roleJoin').onclick=()=>{role='join';badge($('#roleBadge'),'Joiner','ok');};
 
-/* ==== audio (unchanged) ==== */
-// beep(), chirp() as before...
+/* ================= Web Audio (local synth) ================= */
+let ctx;
+function audio(){ if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'}); }
+function dbToGain(db){ return Math.pow(10, db/20); }
+function beep(hz=440,ms=300,db=0){ audio(); const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();
+  o.type='sine'; o.frequency.value=hz; const peak=0.2*dbToGain(db);
+  g.gain.setValueAtTime(0.0005,t); g.gain.exponentialRampToValueAtTime(Math.max(0.0006,peak),t+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0005,t+ms/1000);
+  o.connect(g).connect(ctx.destination); o.start(t); o.stop(t+ms/1000+0.05);
+}
+function chirp(a=500,b=2000,ms=600,db=0){ audio(); const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();
+  o.type='sine'; o.frequency.setValueAtTime(a,t); o.frequency.linearRampToValueAtTime(b,t+ms/1000);
+  const peak=0.2*dbToGain(db);
+  g.gain.setValueAtTime(0.0005,t); g.gain.exponentialRampToValueAtTime(Math.max(0.0006,peak),t+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0005,t+ms/1000);
+  o.connect(g).connect(ctx.destination); o.start(t); o.stop(t+ms/1000+0.05);
+}
+['touchstart','mousedown','keydown'].forEach(e=>window.addEventListener(e,audio,{once:true}));
 
-/* ==== WebRTC setup (unchanged except refactor) ==== */
+/* ================= WebRTC ================= */
 let pc,dc,roomUnsub=null,callerUnsub=null,calleeUnsub=null;
-function newPC(localOnly){ /* same as before */ }
-function attachDC(){ /* same as before */ }
+function newPC(localOnly=false){
+  pc=new RTCPeerConnection(localOnly?{iceServers:[]}:{iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  pc.onconnectionstatechange=()=>{
+    const st=pc.connectionState;
+    badge($('#conn'),st,st==='connected'?'ok':(st==='failed'||st==='disconnected'?'bad':'warn'));
+    const up=st==='connected';
+    ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
+  };
+  pc.ondatachannel=e=>{dc=e.channel;attachDC();};
+}
+function attachDC(){
+  if(!dc)return;
+  badge($('#dc'),dc.readyState,dc.readyState==='open'?'ok':'warn');
+  dc.onopen = ()=>badge($('#dc'),dc.readyState,'ok');
+  dc.onclose= ()=>badge($('#dc'),dc.readyState,'bad');
+  dc.onmessage = (e)=>{
+    const m=JSON.parse(e.data);
+    if(m.type==='BEEP')  beep(m.hz??440,m.ms??300,m.db??0);
+    if(m.type==='CHIRP') chirp(m.from??500,m.to??2000,m.ms??600,m.db??0);
+    log('RX',m.type);
+  };
+}
 function send(m){ if(dc&&dc.readyState==='open') dc.send(JSON.stringify(m)); }
-$('#btnBeep').onclick=()=>send({type:'BEEP'});
-$('#btnChirp').onclick=()=>send({type:'CHIRP'});
-$('#btnPing').onclick=()=>send({type:'PING'});
+$('#btnBeep').onclick = ()=>send({type:'BEEP',hz:1000,ms:400,db:-10});
+$('#btnChirp').onclick= ()=>send({type:'CHIRP',from:500,to:4000,ms:600,db:-5});
+$('#btnPing').onclick  = ()=>send({type:'PING'});
 
-/* ==== Firebase auto-init ==== */
+/* ================= Firebase (auto-init) ================= */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
 import {
   initializeFirestore, doc, setDoc, onSnapshot, updateDoc, Timestamp,
   collection, addDoc, getDocs, deleteDoc, deleteField
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
-const firebaseConfig={ /* ... your keys ... */ };
-const app=initializeApp(firebaseConfig);
-const db=initializeFirestore(app,{experimentalAutoDetectLongPolling:true,useFetchStreams:false});
+const firebaseConfig = {
+  apiKey: "AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
+  authDomain: "ucpairing.firebaseapp.com",
+  projectId: "ucpairing",
+  storageBucket: "ucpairing.firebasestorage.app",
+  messagingSenderId: "663962026087",
+  appId: "1:663962026087:web:a13ac7cca6fe8c1b6014c2"
+};
+const app = initializeApp(firebaseConfig);
+const db  = initializeFirestore(app,{experimentalAutoDetectLongPolling:true,useFetchStreams:false});
 log('Firebase ready');
 
-/* ==== Cloud start (refactored) ==== */
+/* ================= Cloud start (refactor) ================= */
 async function startCloudWith(code){
   if(!role){alert('Pick role first');return;}
-  const roomRef=doc(db,'rooms',code);
-  const expiresAt=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
+  code=sixDigits(code);
+  $('#code').value=code;
   localStorage.setItem('pair.role', role);
   localStorage.setItem('pair.code', code);
+
+  const roomRef=doc(db,'rooms',code);
+  const expiresAt=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
 
   roomUnsub&&roomUnsub(); callerUnsub&&callerUnsub(); calleeUnsub&&calleeUnsub();
   newPC(false);
@@ -96,36 +179,45 @@ async function startCloudWith(code){
     dc=pc.createDataChannel('ucktt'); attachDC();
     const callerCandidates=collection(roomRef,'callerCandidates');
     const calleeCandidates=collection(roomRef,'calleeCandidates');
-    pc.onicecandidate=async e=>{if(e.candidate)await addDoc(callerCandidates,e.candidate.toJSON());};
+    pc.onicecandidate=async e=>{ if(e.candidate) await addDoc(callerCandidates,e.candidate.toJSON()); };
+
     const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
     await setDoc(roomRef,{offer,expiresAt},{merge:true});
     roomUnsub=onSnapshot(roomRef,async s=>{
       const d=s.data()||{};
-      if(d.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription(d.answer); log('Got answer');}
+      if(d.answer && !pc.currentRemoteDescription){
+        await pc.setRemoteDescription(d.answer); log('Got answer; connecting…');
+      }
     });
     calleeUnsub=onSnapshot(calleeCandidates,snap=>{
-      snap.docChanges().forEach(ch=>{if(ch.type==='added')pc.addIceCandidate(ch.doc.data());});
+      snap.docChanges().forEach(ch=>{ if(ch.type==='added') pc.addIceCandidate(ch.doc.data()); });
     });
+
   } else {
     const callerCandidates=collection(roomRef,'callerCandidates');
     const calleeCandidates=collection(roomRef,'calleeCandidates');
-    pc.onicecandidate=async e=>{if(e.candidate)await addDoc(calleeCandidates,e.candidate.toJSON());};
+    pc.onicecandidate=async e=>{ if(e.candidate) await addDoc(calleeCandidates,e.candidate.toJSON()); };
+
     roomUnsub=onSnapshot(roomRef,async s=>{
       const d=s.data()||{};
-      if(d.offer&&!pc.currentRemoteDescription){
+      if(d.offer && !pc.currentRemoteDescription){
         await pc.setRemoteDescription(d.offer);
         const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
-        await updateDoc(roomRef,{answer:ans,expiresAt});
-        log('Posted answer');
+        await updateDoc(roomRef,{answer:ans,expiresAt}); log('Posted answer');
         callerUnsub=onSnapshot(callerCandidates,snap=>{
-          snap.docChanges().forEach(ch=>{if(ch.type==='added')pc.addIceCandidate(ch.doc.data());});
+          snap.docChanges().forEach(ch=>{ if(ch.type==='added') pc.addIceCandidate(ch.doc.data()); });
         });
       }
     });
   }
 }
 
-/* ==== Reset Room ==== */
+$('#startCloud').onclick = async ()=>{
+  const code = sixDigits($('#code').value || Math.floor(Math.random()*1e6));
+  await startCloudWith(code);
+};
+
+/* ================= Reset Room (same code, fresh negotiation) ================= */
 async function clearRoom(code){
   const roomRef=doc(db,'rooms',code);
   const caller=await getDocs(collection(roomRef,'callerCandidates'));
@@ -137,31 +229,120 @@ async function clearRoom(code){
   ]);
   log('Room cleared');
 }
-$('#btnReset').onclick=async()=>{
-  const code=$('#code').value.trim();
-  if(!code)return;
-  try{pc?.close();}catch{}
+$('#btnReset').onclick = async ()=>{
+  const code=$('#code').value.trim(); if(!code) return;
+  try{ pc?.close(); }catch{}
   await clearRoom(code);
   await startCloudWith(code);
 };
 
-/* ==== Button start ==== */
-$('#startCloud').onclick=async()=>{
-  const code=sixDigits($('#code').value||Math.floor(Math.random()*1e6));
-  $('#code').value=code;
-  await startCloudWith(code);
-};
-
-/* ==== Auto-rejoin ==== */
+/* ================= Auto-rejoin on load ================= */
 window.addEventListener('load',()=>{
   const lastRole=localStorage.getItem('pair.role');
   const lastCode=localStorage.getItem('pair.code');
-  if(lastRole&&lastCode){
+  if(lastRole && lastCode){
     role=lastRole; badge($('#roleBadge'), role==='host'?'Host':'Joiner','ok');
     $('#code').value=lastCode;
     startCloudWith(lastCode);
   }
 });
+
+/* ================= QR (offline) ================= */
+$('#qrMake').onclick = async ()=>{
+  if(!role){alert('Pick role'); return;}
+  // Local-only ICE (no server) — good for same-network offline use
+  newPC(true);
+  if(role==='host'){ dc=pc.createDataChannel('ucktt'); attachDC(); }
+  const desc = role==='host' ? await pc.createOffer() : await pc.createAnswer();
+  await pc.setLocalDescription(desc);
+  if(pc.iceGatheringState!=='complete'){
+    await new Promise(r=>pc.addEventListener('icegatheringstatechange',()=>pc.iceGatheringState==='complete'&&r()));
+  }
+  const packed = b64(JSON.stringify({ role, sdp: pc.localDescription }));
+  makeQR(packed);
+  log('[QR] payload len (base64)=', packed.length);
+};
+
+$('#qrScan').onclick = async ()=>{
+  const t=$('#qrPaste').value.trim(); if(!t) return;
+  const obj = JSON.parse(ub64(t));
+  if(!pc) newPC(true);
+  if(role==='host' && obj.role==='join'){
+    await pc.setRemoteDescription(obj.sdp); log('Answer applied — connecting…');
+  } else if(role==='join' && obj.role==='host'){
+    await pc.setRemoteDescription(obj.sdp);
+    const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
+    if(pc.iceGatheringState!=='complete'){
+      await new Promise(r=>pc.addEventListener('icegatheringstatechange',()=>pc.iceGatheringState==='complete'&&r()));
+    }
+    const reply=b64(JSON.stringify({ role, sdp: pc.localDescription }));
+    makeQR(reply); log('Reply QR ready — show back to Host');
+  } else {
+    alert('Role mismatch. One must be Host, the other Joiner.');
+  }
+};
+
+/* ================= Camera QR scanning ================= */
+let scanner=null;
+$('#scanStart').onclick = ()=>{
+  try{
+    scanner = new Html5Qrcode("reader");
+    scanner.start(
+      { facingMode:"environment" },
+      { fps:10, qrbox:250 },
+      decodedText=>{
+        console.log("QR decoded:",decodedText);
+        $('#qrPaste').value = decodedText;
+        $('#qrScan').click();
+        $('#scanStop').click();
+      },
+      _err=>{}
+    ).catch(err=>console.error('scanner.start error',err));
+  }catch(e){console.error(e);}
+};
+$('#scanStop').onclick = ()=>{
+  if(scanner){
+    scanner.stop().then(()=>scanner.clear()).catch(()=>{});
+    scanner = null;
+  }
+};
+
+/* ================= Real QR encoder (embedded, MIT-like) ================= */
+(function(){function P(a){this.mode=K.MODE_8BIT_BYTE;this.data=a}
+function Q(a,b){this.typeNumber=a;this.errorCorrectLevel=b;this.modules=null;this.moduleCount=0;this.dataList=[];this.dataCache=null}
+const K={PAD0:236,PAD1:17,MODE_8BIT_BYTE:4};
+Q.prototype={
+ addData:function(a){this.dataList.push(new P(a));this.dataCache=null},
+ isDark:function(r,c){if(!this.modules||r<0||this.moduleCount<=r||c<0||this.moduleCount<=c)throw Error(r+","+c);return this.modules[r][c]},
+ getModuleCount:function(){return this.moduleCount},
+ make:function(){this.typeNumber=4;this.moduleCount=33;this.modules=Array(this.moduleCount);
+  for(let r=0;r<this.moduleCount;r++){this.modules[r]=Array(this.moduleCount);for(let c=0;c<this.moduleCount;c++)this.modules[r][c]=null}
+  this._pos(0,0); this._pos(this.moduleCount-7,0); this._pos(0,this.moduleCount-7);
+  this._map(this._createData());
+ },
+ _pos:function(x,y){for(let r=-1;r<=7;r++) if(!(x+r<=-1||this.moduleCount<=x+r))
+  for(let c=-1;c<=7;c++) if(!(y+c<=-1||this.moduleCount<=y+c))
+    this.modules[x+r][y+c]=(0<=r&&r<=6&&(c==0||c==6))||(0<=c&&c<=6&&(r==0||r==6))||(2<=r&&r<=4&&2<=c&&c<=4)},
+ _map:function(bytes){let i=0,row=this.moduleCount-1,col=this.moduleCount-1,dir=-1;
+  for(;col>0;col-=2){if(col===6)col--;for(;;){for(let c=0;c<2;c++) if(this.modules[row][col-c]===null){
+     const bit = i<bytes.length ? ( (bytes[i>>>3] >>> (7-(i%8)) ) & 1) : 0; this.modules[row][col-c]=!!bit; i++; }
+   row+=dir; if(row<0||row>=this.moduleCount){row-=dir; dir=-dir; break;}}}
+ },
+ _createData:function(){let out=[],dl=this.dataList.length;
+  for(let i=0;i<dl;i++){const d=this.dataList[i].data; for(let j=0;j<d.length;j++) out.push(d.charCodeAt(j));}
+  while(out.length+2<=80){out.push(K.PAD0,K.PAD1);} while(out.length<80){out.push(K.PAD0);} return out;
+}};
+window.QR=Q;})();
+function makeQR(text){
+  if(!window.QR){ console.error('[QR] encoder missing'); $('#qrWrap').textContent='QR library missing'; return; }
+  const qr=new QR(4,0); qr.addData(text); qr.make();
+  const m=qr.getModuleCount(), size=6, pad=10;
+  const cvs=document.createElement('canvas'); cvs.width=cvs.height=m*size+pad*2; const ctx=cvs.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cvs.width,cvs.height); ctx.fillStyle='#000';
+  let dark=0; for(let r=0;r<m;r++) for(let c=0;c<m;c++) if(qr.isDark(r,c)){dark++; ctx.fillRect(pad+c*size,pad+r*size,size,size);}
+  console.log('[QR] modules',m,'dark',dark,'density', (dark/(m*m)).toFixed(3));
+  $('#qrWrap').innerHTML=''; $('#qrWrap').appendChild(cvs);
+}
 </script>
 </body>
 </html>
