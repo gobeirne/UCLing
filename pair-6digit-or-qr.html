@@ -17,14 +17,15 @@
   textarea{width:100%;height:110px;font:12px ui-monospace,monospace}
   .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
   .ok{background:var(--okbg);color:var(--ok)} .warn{background:var(--warnbg);color:var(--warn)} .bad{background:var(--badbg);color:var(--bad)}
-  #log{font-size:.86rem;max-height:180px;overflow:auto;white-space:pre-wrap}
-  #qrWrap svg{width:220px;height:220px} /* crisp, small QR */
+  #log{font-size:.86rem;max-height:190px;overflow:auto;white-space:pre-wrap}
+  #qrWrap svg{width:280px;height:280px}
+  .qr-nav{display:flex;gap:8px;align-items:center}
 </style>
 
-<!-- Offline-capable libs (place local copies in the same folder) -->
-<script src="qrcode.js"></script>              <!-- QR encoder (generator) -->
-<script src="pako.min.js"></script>            <!-- Deflate compression -->
-<script src="html5-qrcode.min.js"></script>    <!-- Camera QR scanner -->
+<!-- Offline libs (put these next to this HTML) -->
+<script src="qrcode.js"></script>              <!-- QR encoder -->
+<script src="pako.min.js"></script>            <!-- Deflate -->
+<script src="html5-qrcode.min.js"></script>    <!-- Camera scanner -->
 </head>
 <body>
 <h1>Pairing Demo — Cloud (STUN) + QR (Offline LAN)</h1>
@@ -35,7 +36,6 @@
     <button id="roleHost">Host</button>
     <button id="roleJoin">Joiner</button>
     <span id="roleBadge" class="status warn">no role</span>
-    <div class="muted" style="margin-top:6px">Cloud = works across networks. QR = offline same-LAN fallback.</div>
   </div>
   <div class="card">
     <h2>Status</h2>
@@ -45,245 +45,250 @@
 </div>
 
 <div class="card">
-  <h2>Cloud (6-digit, STUN, no trickle)</h2>
+  <h2>Cloud (6-digit, STUN, single SDP)</h2>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <label>Code: <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" style="width:9ch"/></label>
-    <button id="startCloud">Start</button>
-    <button id="btnReset">Reset Room</button>
-    <span class="muted">Rooms auto-expire in 7 days. No TURN—cross-network works when NATs behave.</span>
+<label>Code: <input id="code" inputmode="numeric" maxlength="6" style="width:9ch"/></label>
+<button id="randCode">🎲 Random</button>
+<button id="startCloud">Start</button>
+<button id="resetRoom">Reset</button>
+    <span class="muted">Room doc appears immediately; SDP updates after ICE completes.</span>
   </div>
 </div>
 
 <div class="card">
-  <h2>QR (offline LAN, compressed single-SDP)</h2>
+  <h2>QR (offline LAN)</h2>
   <div class="row">
     <div class="card">
       <h3>Make & show my QR</h3>
       <button id="qrMake">Create my QR</button>
-      <div id="qrWrap" style="margin-top:8px"></div>
-      <div class="muted">Smaller, crisper QR via compression + SVG.</div>
+      <button id="qrToggle" style="display:none;">⚠ Trouble scanning?</button>
+      <div id="qrWrap"></div>
+      <div id="qrNav" class="qr-nav" style="display:none;">
+        <button id="qrPrev">◀ Prev</button>
+        <span id="qrIndex" class="muted">0/0</span>
+        <button id="qrNext">Next ▶</button>
+      </div>
     </div>
     <div class="card">
       <h3>Scan partner QR</h3>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-        <button id="scanStart">Start Camera Scan</button>
-        <button id="scanStop">Stop</button>
-      </div>
+      <button id="scanStart">Start Camera Scan</button>
+      <button id="scanStop">Stop</button>
       <div id="reader" style="width:320px;max-width:100%;"></div>
-      <div class="muted" style="margin:8px 0">…or paste the QR text:</div>
-      <textarea id="qrPaste" placeholder="Paste partner QR text (compressed base64url)…"></textarea>
-      <button id="qrScan">Apply</button>
+      <textarea id="qrPaste" placeholder="Paste scanned text…"></textarea>
+      <button id="qrApply">Apply</button>
+      <div id="qrProgress" class="muted"></div>
     </div>
   </div>
 </div>
 
 <div class="card">
   <h2>Actions</h2>
-  <button id="btnBeep" disabled>Beep (440 Hz)</button>
+  <button id="btnBeep" disabled>Beep</button>
   <button id="btnChirp" disabled>Chirp</button>
   <button id="btnPing" disabled>Ping</button>
 </div>
 
 <script type="module">
-/* ================= Helpers ================= */
+/* ===== Helpers ===== */
 const $=s=>document.querySelector(s), logEl=$('#log');
-function log(...a){logEl.textContent+=a.join(' ')+"\\n";logEl.scrollTop=logEl.scrollHeight;}
+function log(...a){const line=a.join(' ');console.log(line);logEl.textContent+=line+"\\n";logEl.scrollTop=logEl.scrollHeight;}
 function badge(el,t,c){el.textContent=t;el.className='status '+c;}
-function sixDigits(x){return(''+x).replace(/\D/g,'').slice(0,6).padStart(6,'0');}
-function delay(ms){return new Promise(r=>setTimeout(r,ms));}
-
-/* Compression helpers (pako + base64url) */
-function b64urlFromBytes(u8){return btoa(String.fromCharCode(...u8)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+function sixDigits(x){return(''+x).replace(/\\D/g,'').slice(0,6).padStart(6,'0');}
+function b64urlFromBytes(u8){return btoa(String.fromCharCode(...u8)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');}
 function bytesFromB64url(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const bin=atob(s);const u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);return u8;}
-function pack(obj){const json=JSON.stringify(obj).replace(/\r?\n/g,'\\n');const def=pako.deflate(json);return b64urlFromBytes(def);}
+function pack(obj){const json=JSON.stringify(obj).replace(/\\r?\\n/g,'\\\\n');const def=pako.deflate(json);return b64urlFromBytes(def);}
 function unpack(s){const bytes=bytesFromB64url(s);const str=pako.inflate(bytes,{to:'string'});return JSON.parse(str);}
 
-/* ================= Role ================= */
+/* ===== Role ===== */
 let role=null;
 $('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');};
 $('#roleJoin').onclick=()=>{role='join';badge($('#roleBadge'),'Joiner','ok');};
 
-/* ================= Web Audio ================= */
-let ctx;function audio(){if(!ctx)ctx=new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});}
-function beep(){audio();const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.value=440;
-g.gain.setValueAtTime(0.001,t);g.gain.exponentialRampToValueAtTime(0.2,t+0.02);g.gain.exponentialRampToValueAtTime(0.001,t+0.3);
-o.connect(g).connect(ctx.destination);o.start(t);o.stop(t+0.35);}
-function chirp(){audio();const t=ctx.currentTime,o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';
-o.frequency.setValueAtTime(500,t);o.frequency.linearRampToValueAtTime(2000,t+0.6);
-g.gain.setValueAtTime(0.001,t);g.gain.exponentialRampToValueAtTime(0.2,t+0.02);g.gain.exponentialRampToValueAtTime(0.001,t+0.6);
-o.connect(g).connect(ctx.destination);o.start(t);o.stop(t+0.65);}
-['touchstart','mousedown','keydown'].forEach(e=>window.addEventListener(e,audio,{once:true}));
+/* ===== WebRTC core ===== */
+let pc,dc;
+function newPCCloud(){return new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});}
+function newPCLocal(){return new RTCPeerConnection({iceServers:[]});}
+async function waitIceComplete(pcx){if(pcx.iceGatheringState==='complete')return;await new Promise(res=>pcx.addEventListener('icegatheringstatechange',()=>pcx.iceGatheringState==='complete'&&res()));}
+function attachPCHandlers(){pc.onconnectionstatechange=()=>{const st=pc.connectionState;badge($('#conn'),st,st==='connected'?'ok':(st==='failed'||st==='disconnected'?'bad':'warn'));['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=st!=='connected');};pc.ondatachannel=e=>{dc=e.channel;attachDC();};}
+function attachDC(){badge($('#dc'),dc.readyState,dc.readyState==='open'?'ok':'warn');dc.onopen=()=>badge($('#dc'),dc.readyState,'ok');dc.onclose=()=>badge($('#dc'),dc.readyState,'bad');dc.onmessage=e=>log('RX',e.data);}
+function send(m){if(dc&&dc.readyState==='open')dc.send(m);}
+$('#btnBeep').onclick=()=>send('BEEP');$('#btnChirp').onclick=()=>send('CHIRP');$('#btnPing').onclick=()=>send('PING');
 
-/* ================= WebRTC core ================= */
-let pc,dc,roomUnsub=null;
-function newPCCloud(){ // STUN on, works across networks (no trickle)
-  return new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-}
-function newPCLocal(){ // offline LAN only
-  return new RTCPeerConnection({iceServers:[]});
-}
-async function waitIceComplete(pcx){
-  if(pcx.iceGatheringState==='complete') return;
-  await new Promise(res=>{
-    pcx.addEventListener('icegatheringstatechange',()=>pcx.iceGatheringState==='complete'&&res(),{once:false});
-  });
-  // tiny settle time
-  await delay(20);
-}
-function attachPCHandlers(){
-  pc.onconnectionstatechange=()=>{
-    const st=pc.connectionState;
-    badge($('#conn'),st,st==='connected'?'ok':(st==='failed'||st==='disconnected'?'bad':'warn'));
-    const up=st==='connected';['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
-  };
-  pc.ondatachannel = e => { dc=e.channel; attachDC(); };
-}
-function attachDC(){
-  if(!dc)return;
-  badge($('#dc'),dc.readyState,dc.readyState==='open'?'ok':'warn');
-  dc.onopen = ()=>badge($('#dc'),dc.readyState,'ok');
-  dc.onclose=()=>badge($('#dc'),dc.readyState,'bad');
-  dc.onmessage = e=>{
-    const m=JSON.parse(e.data);
-    if(m.type==='BEEP')  beep();
-    if(m.type==='CHIRP') chirp();
-    log('RX',m.type);
-  };
-}
-function send(m){ if(dc&&dc.readyState==='open') dc.send(JSON.stringify(m)); }
-$('#btnBeep').onclick=()=>send({type:'BEEP'});
-$('#btnChirp').onclick=()=>send({type:'CHIRP'});
-$('#btnPing').onclick =()=>send({type:'PING'});
-
-/* ================= Firebase (auto-init) ================= */
+/* ===== Firebase (signaling, with debug) ===== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
-import { initializeFirestore, doc, setDoc, onSnapshot, updateDoc, Timestamp, deleteField } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+import {
+  initializeFirestore, doc, setDoc, onSnapshot, updateDoc, Timestamp, deleteField, setLogLevel
+} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
-  authDomain: "ucpairing.firebaseapp.com",
-  projectId: "ucpairing",
-  storageBucket: "ucpairing.firebasestorage.app",
-  messagingSenderId: "663962026087",
-  appId: "1:663962026087:web:a13ac7cca6fe8c1b6014c2"
-};
-const app = initializeApp(firebaseConfig);
-const db  = initializeFirestore(app,{experimentalAutoDetectLongPolling:true,useFetchStreams:false});
-log('Firebase ready');
+const app = initializeApp({
+  apiKey:"AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
+  authDomain:"ucpairing.firebaseapp.com",
+  projectId:"ucpairing"
+});
+const db  = initializeFirestore(app,{experimentalAutoDetectLongPolling:true});
+setLogLevel('debug'); // Firestore SDK debug in console
+log('Firebase ready. projectId=', app.options.projectId);
 
-/* ================= Cloud (no trickle, single SDP each) ================= */
-async function startCloudWith(code){
-  if(!role){alert('Pick role first');return;}
-  code=sixDigits(code); $('#code').value=code;
-  localStorage.setItem('pair.role',role); localStorage.setItem('pair.code',code);
-
-  const roomRef=doc(db,'rooms',code);
-  const expiresAt=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
-
-  roomUnsub && roomUnsub();
-  pc = newPCCloud(); attachPCHandlers();
-
-  if(role==='host'){
-    dc = pc.createDataChannel('ucktt'); attachDC();
-    const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
-    await waitIceComplete(pc); // gather STUN/host candidates into the SDP
-    await setDoc(roomRef,{offer:pc.localDescription,expiresAt},{merge:true});
-
-    roomUnsub = onSnapshot(roomRef, async snap=>{
-      const d=snap.data()||{};
-      if(d.answer && !pc.currentRemoteDescription){
-        await pc.setRemoteDescription(d.answer);
-        log('Cloud: got answer; connecting…');
-      }
-    });
-
-  } else { // joiner
-    roomUnsub = onSnapshot(roomRef, async snap=>{
-      const d=snap.data()||{};
-      if(d.offer && !pc.currentRemoteDescription){
-        await pc.setRemoteDescription(d.offer);
-        const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
-        await waitIceComplete(pc);
-        await updateDoc(roomRef,{answer:pc.localDescription,expiresAt});
-        log('Cloud: posted answer.');
-      }
-    });
+/* Helper: write immediately, then update after ICE */
+async function writeOrUpdate(roomRef, field, desc){
+  try{
+    await setDoc(roomRef, {[field]: desc}, {merge:true});
+    log('Firestore setDoc:', field, 'written.');
+  }catch(e){
+    console.error(e); log('ERR setDoc', field, e.message||e);
+  }
+}
+async function upgradeSDP(roomRef, field){
+  try{
+    await updateDoc(roomRef, {[field]: pc.localDescription});
+    log('Firestore updateDoc:', field, 'updated after ICE.');
+  }catch(e){
+    console.error(e); log('ERR updateDoc', field, e.message||e);
   }
 }
 
-$('#startCloud').onclick = ()=>startCloudWith($('#code').value || Math.floor(Math.random()*1e6));
+/* Cloud flow (no trickle; immediate write + post-ICE update) */
+async function startCloudWith(code){
+  if(!role){alert('Pick role');return;}
+  const id = sixDigits(code);
+  $('#code').value = id;
+  const roomRef=doc(db,'rooms',id);
+  const exp=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
 
-$('#btnReset').onclick = async ()=>{
-  const code=$('#code').value.trim(); if(!code) return;
-  try{ pc?.close(); }catch{}
-  const roomRef=doc(db,'rooms',code);
-  await updateDoc(roomRef,{offer:deleteField(),answer:deleteField()}).catch(()=>{});
-  log('Room cleared');
-  await startCloudWith(code);
-};
+  pc=newPCCloud();attachPCHandlers();
 
-/* Auto-rejoin on load */
-window.addEventListener('load',()=>{
-  const r=localStorage.getItem('pair.role'), c=localStorage.getItem('pair.code');
-  if(r&&c){ role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok'); $('#code').value=c; startCloudWith(c); }
-});
+  if(role==='host'){
+    dc=pc.createDataChannel('x');attachDC();
+    const offer=await pc.createOffer();await pc.setLocalDescription(offer);
+    await writeOrUpdate(roomRef,'offer', pc.localDescription);
+    await updateDoc(roomRef,{exp}).catch(()=>{});
+    // complete ICE then upgrade offer SDP with candidates
+    await waitIceComplete(pc);
+    await upgradeSDP(roomRef,'offer');
 
-/* ================= QR (offline LAN, compressed) ================= */
-function makeQR(text){
-  const qr=qrcode(0,'L'); // lower EC => fewer modules
-  qr.addData(text);
-  qr.make();
-  const wrap=$('#qrWrap');
-  wrap.innerHTML = qr.createSvgTag(2); // module size 2; we scale via CSS
+    onSnapshot(roomRef, async s=>{
+      try{
+        const d=s.data()||{};
+        if(d.answer && !pc.currentRemoteDescription){
+          await pc.setRemoteDescription(d.answer);
+          log('Cloud: got answer; connecting…');
+        }
+      }catch(e){console.error(e);log('ERR onSnapshot host', e.message||e);}
+    }, err=>{console.error(err);log('onSnapshot error (host):', err.message||err);});
+
+  } else { // joiner
+    onSnapshot(roomRef, async s=>{
+      try{
+        const d=s.data()||{};
+        if(d.offer && !pc.currentRemoteDescription){
+          await pc.setRemoteDescription(d.offer);
+          const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
+          await writeOrUpdate(roomRef,'answer', pc.localDescription);
+          await updateDoc(roomRef,{exp}).catch(()=>{});
+          await waitIceComplete(pc);
+          await upgradeSDP(roomRef,'answer');
+          log('Cloud: answer posted & upgraded.');
+        }
+      }catch(e){console.error(e);log('ERR onSnapshot joiner', e.message||e);}
+    }, err=>{console.error(err);log('onSnapshot error (joiner):', err.message||err);});
+  }
 }
 
-$('#qrMake').onclick = async ()=>{
-  if(!role){alert('Pick role'); return;}
-  pc = newPCLocal(); attachPCHandlers();
-  if(role==='host'){ dc=pc.createDataChannel('ucktt'); attachDC(); }
-  const desc = role==='host' ? await pc.createOffer() : await pc.createAnswer();
-  await pc.setLocalDescription(desc);
-  await waitIceComplete(pc); // host candidates only
-  const payload = { role, sdp: pc.localDescription };
-  const packed  = pack(payload); // deflate + base64url (compact)
-  makeQR(packed);
-  log('[QR] bytes:', packed.length);
+$('#startCloud').onclick=()=>startCloudWith($('#code').value||Math.floor(Math.random()*1e6));
+$('#randCode').onclick = ()=>{
+  if(role!=='host'){ alert('Only Host can pick random code'); return; }
+  const code = String(Math.floor(Math.random()*1e6)).padStart(6,'0');
+  $('#code').value = code;
+  log('Random code generated:', code);
 };
 
-$('#qrScan').onclick = async ()=>{
-  const t=$('#qrPaste').value.trim(); if(!t) return;
-  const obj = unpack(t);
-  if(!pc) pc = newPCLocal(), attachPCHandlers();
-  if(role==='host' && obj.role==='join'){ await pc.setRemoteDescription(obj.sdp); log('QR: answer applied — connecting…'); }
-  else if(role==='join' && obj.role==='host'){
-    await pc.setRemoteDescription(obj.sdp);
-    const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
-    await waitIceComplete(pc);
-    const reply=pack({role,sdp:pc.localDescription});
-    makeQR(reply); log('QR: reply ready — show back to Host');
-  } else { alert('Role mismatch. One must be Host, the other Joiner.'); }
-};
-
-/* ================= Camera QR scan ================= */
-let scanner=null;
-$('#scanStart').onclick = ()=>{
+$('#resetRoom').onclick=async()=>{
+  const id=sixDigits($('#code').value||'');
+  if(!id) return;
   try{
-    scanner = new Html5Qrcode("reader");
-    scanner.start(
-      { facingMode:"environment" },
-      { fps:10, qrbox:220 },
-      decoded=>{
-        $('#qrPaste').value=decoded;
-        $('#qrScan').click();
-        $('#scanStop').click();
-      },
-      _err=>{}
-    ).catch(err=>console.error('scan start error',err));
-  }catch(e){console.error(e);}
+    await updateDoc(doc(db,'rooms',id), {offer: deleteField(), answer: deleteField()});
+    log('Room fields cleared:', id);
+  }catch(e){console.error(e);log('ERR resetRoom', e.message||e);}
 };
-$('#scanStop').onclick = ()=>{
-  if(scanner){ scanner.stop().then(()=>scanner.clear()).catch(()=>{}); scanner=null; }
+
+/* ===== QR: single by default, chunked fallback ===== */
+const QR_PREFIX='UCP1|', MAX_CHUNK=350;
+function splitChunks(s){let a=[];for(let i=0;i<s.length;i+=MAX_CHUNK)a.push(s.slice(i,i+MAX_CHUNK));return a;}
+function renderQR(t){const q=qrcode(0,'L');q.addData(t);q.make();return q.createSvgTag(2);}
+
+let qrPacked='', qrChunks=[], qrMode='single', qrIdx=0;
+function showQR(){
+  if(qrMode==='single'){
+    $('#qrWrap').innerHTML=renderQR(qrPacked);
+    $('#qrNav').style.display='none';
+  }else{
+    $('#qrWrap').innerHTML=renderQR(`${QR_PREFIX}${qrChunks.length}|${qrIdx+1}|${qrChunks[qrIdx]}`);
+    $('#qrIndex').textContent=`${qrIdx+1}/${qrChunks.length}`;
+    $('#qrNav').style.display='flex';
+  }
+}
+$('#qrPrev').onclick=()=>{qrIdx=(qrIdx-1+qrChunks.length)%qrChunks.length;showQR();};
+$('#qrNext').onclick=()=>{qrIdx=(qrIdx+1)%qrChunks.length;showQR();};
+
+$('#qrMake').onclick=async()=>{
+  if(!role){alert('Pick role');return;}
+  pc=newPCLocal();attachPCHandlers();
+  if(role==='host'){dc=pc.createDataChannel('x');attachDC();}
+  const desc=role==='host'?await pc.createOffer():await pc.createAnswer();
+  await pc.setLocalDescription(desc);
+  await waitIceComplete(pc);
+  qrPacked=pack({role,sdp:pc.localDescription});
+  qrMode='single'; $('#qrToggle').style.display='inline'; showQR();
 };
+$('#qrToggle').onclick=()=>{qrChunks=splitChunks(qrPacked);qrIdx=0;qrMode=(qrMode==='single'?'multi':'single');showQR();};
+
+/* ===== Scanner (handles single OR chunked) ===== */
+let asm={total:0,got:new Set(),parts:[]};
+function resetAsm(){asm={total:0,got:new Set(),parts:[]};$('#qrProgress').textContent='';}
+function absorb(text){
+  if(text.startsWith(QR_PREFIX)){
+    const rest=text.slice(QR_PREFIX.length);
+    const p1=rest.indexOf('|'), p2=rest.indexOf('|',p1+1);
+    if(p1<0||p2<0) return;
+    const total=+rest.slice(0,p1), index=+rest.slice(p1+1,p2), data=rest.slice(p2+1);
+    if(!asm.total){asm.total=total;asm.parts=Array(total).fill('');}
+    if(!asm.got.has(index)){asm.got.add(index);asm.parts[index-1]=data;$('#qrProgress').textContent=`Got ${asm.got.size}/${asm.total}`;}
+    if(asm.got.size===asm.total){const packed=asm.parts.join('');resetAsm();applyPacked(packed);}
+  }else{
+    // single QR packed payload
+    applyPacked(text);
+  }
+}
+async function applyPacked(packed){
+  try{
+    const obj=unpack(packed);
+    if(!pc) pc=newPCLocal(), attachPCHandlers();
+    if(role==='host' && obj.role==='join'){
+      await pc.setRemoteDescription(obj.sdp);
+      log('QR: answer applied — connecting…');
+    }else if(role==='join' && obj.role==='host'){
+      await pc.setRemoteDescription(obj.sdp);
+      const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
+      await waitIceComplete(pc);
+      // show reply back to host (single by default)
+      qrPacked=pack({role,sdp:pc.localDescription});
+      qrMode='single'; $('#qrToggle').style.display='inline'; showQR();
+      log('QR: reply ready.');
+    }else{
+      alert('Role mismatch. One must be Host, the other Joiner.');
+    }
+  }catch(e){console.error(e);log('ERR applyPacked', e.message||e);}
+}
+$('#qrApply').onclick=()=>{const t=$('#qrPaste').value.trim(); if(t){absorb(t); $('#qrPaste').value='';}};
+
+let scanner=null;
+$('#scanStart').onclick=()=>{
+  try{
+    scanner=new Html5Qrcode("reader");
+    scanner.start({facingMode:"environment"},{fps:10,qrbox:220},txt=>absorb(txt),_=>{}).catch(err=>{console.error(err);log('scanner.start ERR',err.message||err);});
+  }catch(e){console.error(e);log('scanner init ERR',e.message||e);}
+};
+$('#scanStop').onclick=()=>{scanner?.stop().then(()=>scanner.clear()).catch(()=>{});scanner=null;};
 </script>
 </body>
 </html>
