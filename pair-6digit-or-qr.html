@@ -89,12 +89,12 @@
 
 <script type="module">
 const $=s=>document.querySelector(s), logEl=$('#log');
-function log(...a){const line=a.join(' ');console.log(line);logEl.textContent+=line+"\\n";logEl.scrollTop=logEl.scrollHeight;}
+function log(...a){const line=a.join(' ');console.log(line);logEl.textContent+=line+"\n";logEl.scrollTop=logEl.scrollHeight;}
 function badge(el,t,c){el.textContent=t;el.className='status '+c;}
-function sixDigits(x){return(''+x).replace(/\\D/g,'').slice(0,6).padStart(6,'0');}
-function b64urlFromBytes(u8){return btoa(String.fromCharCode(...u8)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');}
+function sixDigits(x){return(''+x).replace(/\D/g,'').slice(0,6).padStart(6,'0');}
+function b64urlFromBytes(u8){return btoa(String.fromCharCode(...u8)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 function bytesFromB64url(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const bin=atob(s);const u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);return u8;}
-function pack(obj){const json=JSON.stringify(obj).replace(/\\r?\\n/g,'\\\\n');const def=pako.deflate(json);return b64urlFromBytes(def);}
+function pack(obj){const json=JSON.stringify(obj).replace(/\r?\n/g,'\\n');const def=pako.deflate(json);return b64urlFromBytes(def);}
 function unpack(s){const bytes=bytesFromB64url(s);const str=pako.inflate(bytes,{to:'string'});return JSON.parse(str);}
 
 /* Role logic */
@@ -134,22 +134,38 @@ const toJSONDesc = d=>d?{type:d.type,sdp:d.sdp}:null;
 async function startCloudWith(code){
   if(!role){alert('Pick role');return;}
   const id=sixDigits(code);$('#code').value=id;
-  const roomRef=doc(db,'rooms',id);const exp=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
+  const roomRef=doc(db,'rooms',id);
+  const expiresAt=Timestamp.fromMillis(Date.now()+7*24*60*60*1000); // <= matches your rules
+
   pc=newPCCloud();attachPCHandlers();
+
   if(role==='host'){
     dc=pc.createDataChannel('x');attachDC();
     const offer=await pc.createOffer();await pc.setLocalDescription(offer);
-    await setDoc(roomRef,{offer:toJSONDesc(pc.localDescription),exp},{merge:true});
+
+    // CREATE with required expiresAt
+    await setDoc(roomRef,{offer:toJSONDesc(pc.localDescription),expiresAt},{merge:true});
+    // After ICE, UPDATE (expiresAt already present on doc, so saneTTL() still passes)
     await waitIceComplete(pc);
     await updateDoc(roomRef,{offer:toJSONDesc(pc.localDescription)});
-    onSnapshot(roomRef,async s=>{const d=s.data()||{};if(d.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription(d.answer);log('Cloud: got answer');}});
-  }else{
+
+    onSnapshot(roomRef,async s=>{
+      const d=s.data()||{};
+      if(d.answer&&!pc.currentRemoteDescription){
+        await pc.setRemoteDescription(d.answer);
+        log('Cloud: got answer');
+      }
+    });
+
+  }else{ // joiner
     onSnapshot(roomRef,async s=>{
       const d=s.data()||{};
       if(d.offer&&!pc.currentRemoteDescription){
         await pc.setRemoteDescription(d.offer);
         const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
-        await setDoc(roomRef,{answer:toJSONDesc(pc.localDescription),exp},{merge:true});
+
+        // If doc didn’t exist yet, this is a CREATE; if it did, it’s an UPDATE. Either way we must include expiresAt on create.
+        await setDoc(roomRef,{answer:toJSONDesc(pc.localDescription),expiresAt},{merge:true});
         await waitIceComplete(pc);
         await updateDoc(roomRef,{answer:toJSONDesc(pc.localDescription)});
       }
