@@ -241,26 +241,88 @@ $('#qrScan').onclick=async()=>{
   }
 };
 
-/* === Real QR encoder (qrcode-generator minimal, MIT) === */
-(function(){function p(a){this.mode=c.MODE_8BIT_BYTE;this.data=a}
-function q(a,b){this.typeNumber=a;this.errorCorrectLevel=b;this.modules=null;this.moduleCount=0;this.dataList=[];this.dataCache=null}
-var c={};c.PAD0=236;c.PAD1=17;c.MODE_8BIT_BYTE=4;
-q.prototype={addData:function(a){this.dataList.push(new p(a));this.dataCache=null},isDark:function(a,b){if(null==this.modules||a<0||this.moduleCount<=a||b<0||this.moduleCount<=b)throw Error(a+","+b);return this.modules[a][b]},
-getModuleCount:function(){return this.moduleCount},make:function(){this.typeNumber=4;this.moduleCount=33;this.modules=Array(this.moduleCount);for(var a=0;a<this.moduleCount;a++){this.modules[a]=Array(this.moduleCount);for(var b=0;b<this.moduleCount;b++)this.modules[a][b]=null}
-this._pos(0,0);this._pos(this.moduleCount-7,0);this._pos(0,this.moduleCount-7);this._map(this._createData())},
-_pos:function(a,b){for(var d=-1;d<=7;d++)if(!(a+d<=-1||this.moduleCount<=a+d))for(var e=-1;e<=7;e++)b+e<=-1||this.moduleCount<=b+e||(this.modules[a+d][b+e]=0<=d&&d<=6&&(0==e||6==e)||0<=e&&e<=6&&(0==d||6==d)||2<=d&&d<=4&&2<=e&&e<=4?!0:!1)},
-_map:function(a){for(var b=0,d=this.moduleCount-1,e=this.moduleCount-1,f=1;0<e;e-=2){6==e&&e--;for(;;){for(var g=0;2>g;g++)null==this.modules[d][e-g]&&(this.modules[d][e-g]=0<b&&1==(a[b>>>3]>>>7-b%8&1));d+=f;if(0>d||this.moduleCount<=d){d-=f;f=-f;break}}}},
-_createData:function(){var a=[],b;for(b=0;b<this.dataList.length;b++){var d=this.dataList[b];for(var e=0;e<d.data.length;e++)a.push(d.data.charCodeAt(e))}
-for(;a.length+2<=80;)a.push(c.PAD0,c.PAD1);for(;a.length<80;)a.push(c.PAD0);return a}};
-window.QR=q})();
+/* === QR mode (offline, debug) === */
+function b64(s){return btoa(unescape(encodeURIComponent(s)));} 
+function ub64(s){try{return decodeURIComponent(escape(atob(s)));}catch{return'';}}
+
+$('#qrMake').onclick = async () => {
+  if (!role) { alert('Pick role'); return; }
+  console.log('[QR] QR lib present?', typeof window.QR, window.QR);
+  newPC(true); 
+  if (role === 'host') { dc = pc.createDataChannel('ucktt'); attachDC(); }
+  const desc = role === 'host' ? await pc.createOffer() : await pc.createAnswer();
+  await pc.setLocalDescription(desc);
+  if (pc.iceGatheringState !== 'complete') {
+    await new Promise(r => pc.addEventListener('icegatheringstatechange', () => 
+      pc.iceGatheringState === 'complete' && r()));
+  }
+  const packed = b64(JSON.stringify({ role, sdp: pc.localDescription }));
+  console.log('[QR] payload bytes(base64)=', packed.length, 'preview=', packed.slice(0,80)+'…');
+  try {
+    makeQR(packed);
+    console.log('[QR] makeQR() called');
+  } catch (e) {
+    console.error('[QR] makeQR failed', e);
+  }
+  log('QR ready — copy/paste to partner side');
+};
+
+$('#qrScan').onclick = async () => {
+  const t = $('#qrPaste').value.trim(); if (!t) return;
+  const obj = JSON.parse(ub64(t));
+  if (!pc) newPC(true);
+  if (role === 'host' && obj.role === 'join') {
+    await pc.setRemoteDescription(obj.sdp); log('Answer applied — connecting…');
+  } else if (role === 'join' && obj.role === 'host') {
+    await pc.setRemoteDescription(obj.sdp);
+    const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
+    if (pc.iceGatheringState !== 'complete') {
+      await new Promise(r => pc.addEventListener('icegatheringstatechange', () => 
+        pc.iceGatheringState === 'complete' && r()));
+    }
+    const reply = b64(JSON.stringify({ role, sdp: pc.localDescription }));
+    makeQR(reply); log('Reply QR ready — show back to Host');
+  } else {
+    alert('Role mismatch. One must be Host, the other Joiner.');
+  }
+};
+
+/* === Real QR renderer with diagnostics === */
 function makeQR(text){
-  const qr=new QR(4,0); qr.addData(text); qr.make();
-  const m=qr.getModuleCount(), size=6, pad=10;
-  const cvs=document.createElement('canvas'); cvs.width=cvs.height=m*size+pad*2; const ctx=cvs.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cvs.width,cvs.height); ctx.fillStyle='#000';
-  for(let r=0;r<m;r++) for(let c=0;c<m;c++) if(qr.isDark(r,c)) ctx.fillRect(pad+c*size,pad+r*size,size,size);
-  $('#qrWrap').innerHTML=''; $('#qrWrap').appendChild(cvs);
+  if (!window.QR) {
+    console.error('[QR] window.QR missing. You still have the old dummy QR block somewhere.');
+    $('#qrWrap').textContent = 'QR library missing';
+    return;
+  }
+  const qr = new QR(4, 0);      // type 4, EC level L
+  qr.addData(text);
+  qr.make();
+
+  const m = qr.getModuleCount(), size = 6, pad = 10;
+  const cvs = document.createElement('canvas');
+  cvs.width = cvs.height = m*size + pad*2;
+  const ctx = cvs.getContext('2d');
+
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,cvs.width,cvs.height); 
+  ctx.fillStyle = '#000';
+  let dark = 0;
+  for (let r=0;r<m;r++){
+    for (let c=0;c<m;c++){
+      if (qr.isDark(r,c)) { dark++; ctx.fillRect(pad+c*size, pad+r*size, size, size); }
+    }
+  }
+  // Heuristic: just finders ≈ very few dark modules. Warn if suspiciously low.
+  const density = dark / (m*m);
+  console.log('[QR] modules', m, 'dark', dark, 'density', density.toFixed(3));
+  if (density < 0.10) {
+    console.warn('[QR] Very low density — looks like only finder patterns were drawn. ' +
+                 'You likely still have the dummy QR function elsewhere.');
+  }
+
+  $('#qrWrap').innerHTML = '';
+  $('#qrWrap').appendChild(cvs);
 }
+
 </script>
 </body>
 </html>
