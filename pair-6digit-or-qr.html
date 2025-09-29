@@ -20,12 +20,12 @@
   #log{font-size:.86rem;max-height:190px;overflow:auto;white-space:pre-wrap}
   #qrWrap svg{width:280px;height:280px}
   .qr-nav{display:flex;gap:8px;align-items:center}
+  #randCode{display:none;} /* only visible for Host */
 </style>
 
-<!-- Offline libs (put these next to this HTML) -->
-<script src="qrcode.js"></script>              <!-- QR encoder -->
-<script src="pako.min.js"></script>            <!-- Deflate -->
-<script src="html5-qrcode.min.js"></script>    <!-- Camera scanner -->
+<script src="qrcode.js"></script>
+<script src="pako.min.js"></script>
+<script src="html5-qrcode.min.js"></script>
 </head>
 <body>
 <h1>Pairing Demo — Cloud (STUN) + QR (Offline LAN)</h1>
@@ -45,13 +45,12 @@
 </div>
 
 <div class="card">
-  <h2>Cloud (6-digit, STUN, single SDP)</h2>
+  <h2>Cloud (6-digit)</h2>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-<label>Code: <input id="code" inputmode="numeric" maxlength="6" style="width:9ch"/></label>
-<button id="randCode">🎲 Random</button>
-<button id="startCloud">Start</button>
-<button id="resetRoom">Reset</button>
-    <span class="muted">Room doc appears immediately; SDP updates after ICE completes.</span>
+    <label>Code: <input id="code" inputmode="numeric" maxlength="6" style="width:9ch"/></label>
+    <button id="randCode">🎲 Random</button>
+    <button id="startCloud">Start</button>
+    <button id="resetRoom">Reset</button>
   </div>
 </div>
 
@@ -89,7 +88,6 @@
 </div>
 
 <script type="module">
-/* ===== Helpers ===== */
 const $=s=>document.querySelector(s), logEl=$('#log');
 function log(...a){const line=a.join(' ');console.log(line);logEl.textContent+=line+"\\n";logEl.scrollTop=logEl.scrollHeight;}
 function badge(el,t,c){el.textContent=t;el.className='status '+c;}
@@ -99,134 +97,77 @@ function bytesFromB64url(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.leng
 function pack(obj){const json=JSON.stringify(obj).replace(/\\r?\\n/g,'\\\\n');const def=pako.deflate(json);return b64urlFromBytes(def);}
 function unpack(s){const bytes=bytesFromB64url(s);const str=pako.inflate(bytes,{to:'string'});return JSON.parse(str);}
 
-/* ===== Role ===== */
+/* Role logic */
 let role=null;
-$('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');};
-$('#roleJoin').onclick=()=>{role='join';badge($('#roleBadge'),'Joiner','ok');};
+function onRoleChange(newRole){
+  role=newRole;
+  badge($('#roleBadge'), role==='host'?'Host':'Joiner','ok');
+  $('#randCode').style.display = role==='host' ? 'inline' : 'none';
+  $('#qrMake').disabled = role!=='host';
+  $('#qrToggle').disabled = role!=='host';
+  $('#scanStart').disabled = role!=='join';
+  $('#scanStop').disabled  = role!=='join';
+  $('#qrPaste').disabled   = role!=='join';
+  $('#qrApply').disabled   = role!=='join';
+}
+$('#roleHost').onclick=()=>onRoleChange('host');
+$('#roleJoin').onclick=()=>onRoleChange('join');
 
-/* ===== WebRTC core ===== */
+/* WebRTC core */
 let pc,dc;
 function newPCCloud(){return new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});}
 function newPCLocal(){return new RTCPeerConnection({iceServers:[]});}
 async function waitIceComplete(pcx){if(pcx.iceGatheringState==='complete')return;await new Promise(res=>pcx.addEventListener('icegatheringstatechange',()=>pcx.iceGatheringState==='complete'&&res()));}
-function attachPCHandlers(){pc.onconnectionstatechange=()=>{const st=pc.connectionState;badge($('#conn'),st,st==='connected'?'ok':(st==='failed'||st==='disconnected'?'bad':'warn'));['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=st!=='connected');};pc.ondatachannel=e=>{dc=e.channel;attachDC();};}
+function attachPCHandlers(){pc.onconnectionstatechange=()=>{const st=pc.connectionState;badge($('#conn'),st,st==='connected'?'ok':(st==='failed'?'bad':'warn'));['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=st!=='connected');};pc.ondatachannel=e=>{dc=e.channel;attachDC();};}
 function attachDC(){badge($('#dc'),dc.readyState,dc.readyState==='open'?'ok':'warn');dc.onopen=()=>badge($('#dc'),dc.readyState,'ok');dc.onclose=()=>badge($('#dc'),dc.readyState,'bad');dc.onmessage=e=>log('RX',e.data);}
 function send(m){if(dc&&dc.readyState==='open')dc.send(m);}
 $('#btnBeep').onclick=()=>send('BEEP');$('#btnChirp').onclick=()=>send('CHIRP');$('#btnPing').onclick=()=>send('PING');
 
-/* ===== Firebase (signaling, with debug) ===== */
+/* Firebase */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
-import {
-  initializeFirestore, doc, setDoc, onSnapshot, updateDoc, Timestamp, deleteField, setLogLevel
-} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
-
-const app = initializeApp({
-  apiKey:"AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
-  authDomain:"ucpairing.firebaseapp.com",
-  projectId:"ucpairing"
-});
+import { initializeFirestore, doc, setDoc, onSnapshot, updateDoc, Timestamp, deleteField } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+const app = initializeApp({ apiKey:"AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw", authDomain:"ucpairing.firebaseapp.com", projectId:"ucpairing" });
 const db  = initializeFirestore(app,{experimentalAutoDetectLongPolling:true});
-setLogLevel('debug'); // Firestore SDK debug in console
 log('Firebase ready. projectId=', app.options.projectId);
+const toJSONDesc = d=>d?{type:d.type,sdp:d.sdp}:null;
 
-/* Helper: write immediately, then update after ICE */
-async function writeOrUpdate(roomRef, field, desc){
-  try{
-    await setDoc(roomRef, {[field]: desc}, {merge:true});
-    log('Firestore setDoc:', field, 'written.');
-  }catch(e){
-    console.error(e); log('ERR setDoc', field, e.message||e);
-  }
-}
-async function upgradeSDP(roomRef, field){
-  try{
-    await updateDoc(roomRef, {[field]: pc.localDescription});
-    log('Firestore updateDoc:', field, 'updated after ICE.');
-  }catch(e){
-    console.error(e); log('ERR updateDoc', field, e.message||e);
-  }
-}
-
-/* Cloud flow (no trickle; immediate write + post-ICE update) */
 async function startCloudWith(code){
   if(!role){alert('Pick role');return;}
-  const id = sixDigits(code);
-  $('#code').value = id;
-  const roomRef=doc(db,'rooms',id);
-  const exp=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
-
+  const id=sixDigits(code);$('#code').value=id;
+  const roomRef=doc(db,'rooms',id);const exp=Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
   pc=newPCCloud();attachPCHandlers();
-
   if(role==='host'){
     dc=pc.createDataChannel('x');attachDC();
     const offer=await pc.createOffer();await pc.setLocalDescription(offer);
-    await writeOrUpdate(roomRef,'offer', pc.localDescription);
-    await updateDoc(roomRef,{exp}).catch(()=>{});
-    // complete ICE then upgrade offer SDP with candidates
+    await setDoc(roomRef,{offer:toJSONDesc(pc.localDescription),exp},{merge:true});
     await waitIceComplete(pc);
-    await upgradeSDP(roomRef,'offer');
-
-    onSnapshot(roomRef, async s=>{
-      try{
-        const d=s.data()||{};
-        if(d.answer && !pc.currentRemoteDescription){
-          await pc.setRemoteDescription(d.answer);
-          log('Cloud: got answer; connecting…');
-        }
-      }catch(e){console.error(e);log('ERR onSnapshot host', e.message||e);}
-    }, err=>{console.error(err);log('onSnapshot error (host):', err.message||err);});
-
-  } else { // joiner
-    onSnapshot(roomRef, async s=>{
-      try{
-        const d=s.data()||{};
-        if(d.offer && !pc.currentRemoteDescription){
-          await pc.setRemoteDescription(d.offer);
-          const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
-          await writeOrUpdate(roomRef,'answer', pc.localDescription);
-          await updateDoc(roomRef,{exp}).catch(()=>{});
-          await waitIceComplete(pc);
-          await upgradeSDP(roomRef,'answer');
-          log('Cloud: answer posted & upgraded.');
-        }
-      }catch(e){console.error(e);log('ERR onSnapshot joiner', e.message||e);}
-    }, err=>{console.error(err);log('onSnapshot error (joiner):', err.message||err);});
+    await updateDoc(roomRef,{offer:toJSONDesc(pc.localDescription)});
+    onSnapshot(roomRef,async s=>{const d=s.data()||{};if(d.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription(d.answer);log('Cloud: got answer');}});
+  }else{
+    onSnapshot(roomRef,async s=>{
+      const d=s.data()||{};
+      if(d.offer&&!pc.currentRemoteDescription){
+        await pc.setRemoteDescription(d.offer);
+        const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
+        await setDoc(roomRef,{answer:toJSONDesc(pc.localDescription),exp},{merge:true});
+        await waitIceComplete(pc);
+        await updateDoc(roomRef,{answer:toJSONDesc(pc.localDescription)});
+      }
+    });
   }
 }
-
 $('#startCloud').onclick=()=>startCloudWith($('#code').value||Math.floor(Math.random()*1e6));
-$('#randCode').onclick = ()=>{
-  if(role!=='host'){ alert('Only Host can pick random code'); return; }
-  const code = String(Math.floor(Math.random()*1e6)).padStart(6,'0');
-  $('#code').value = code;
-  log('Random code generated:', code);
-};
+$('#resetRoom').onclick=async()=>{const id=sixDigits($('#code').value||'');if(!id)return;await updateDoc(doc(db,'rooms',id),{offer:deleteField(),answer:deleteField()}).catch(()=>{});};
 
-$('#resetRoom').onclick=async()=>{
-  const id=sixDigits($('#code').value||'');
-  if(!id) return;
-  try{
-    await updateDoc(doc(db,'rooms',id), {offer: deleteField(), answer: deleteField()});
-    log('Room fields cleared:', id);
-  }catch(e){console.error(e);log('ERR resetRoom', e.message||e);}
-};
+/* Random code */
+$('#randCode').onclick=()=>{if(role!=='host')return;const code=String(Math.floor(Math.random()*1e6)).padStart(6,'0');$('#code').value=code;log('Random code:',code);};
 
-/* ===== QR: single by default, chunked fallback ===== */
+/* QR logic */
 const QR_PREFIX='UCP1|', MAX_CHUNK=350;
 function splitChunks(s){let a=[];for(let i=0;i<s.length;i+=MAX_CHUNK)a.push(s.slice(i,i+MAX_CHUNK));return a;}
 function renderQR(t){const q=qrcode(0,'L');q.addData(t);q.make();return q.createSvgTag(2);}
-
-let qrPacked='', qrChunks=[], qrMode='single', qrIdx=0;
-function showQR(){
-  if(qrMode==='single'){
-    $('#qrWrap').innerHTML=renderQR(qrPacked);
-    $('#qrNav').style.display='none';
-  }else{
-    $('#qrWrap').innerHTML=renderQR(`${QR_PREFIX}${qrChunks.length}|${qrIdx+1}|${qrChunks[qrIdx]}`);
-    $('#qrIndex').textContent=`${qrIdx+1}/${qrChunks.length}`;
-    $('#qrNav').style.display='flex';
-  }
-}
+let qrPacked='',qrChunks=[],qrMode='single',qrIdx=0;
+function showQR(){if(qrMode==='single'){$('#qrWrap').innerHTML=renderQR(qrPacked);$('#qrNav').style.display='none';}else{$('#qrWrap').innerHTML=renderQR(`${QR_PREFIX}${qrChunks.length}|${qrIdx+1}|${qrChunks[qrIdx]}`);$('#qrIndex').textContent=`${qrIdx+1}/${qrChunks.length}`;$('#qrNav').style.display='flex';}}
 $('#qrPrev').onclick=()=>{qrIdx=(qrIdx-1+qrChunks.length)%qrChunks.length;showQR();};
 $('#qrNext').onclick=()=>{qrIdx=(qrIdx+1)%qrChunks.length;showQR();};
 
@@ -235,59 +176,44 @@ $('#qrMake').onclick=async()=>{
   pc=newPCLocal();attachPCHandlers();
   if(role==='host'){dc=pc.createDataChannel('x');attachDC();}
   const desc=role==='host'?await pc.createOffer():await pc.createAnswer();
-  await pc.setLocalDescription(desc);
-  await waitIceComplete(pc);
-  qrPacked=pack({role,sdp:pc.localDescription});
-  qrMode='single'; $('#qrToggle').style.display='inline'; showQR();
+  await pc.setLocalDescription(desc);await waitIceComplete(pc);
+  qrPacked=pack({role,sdp:{type:pc.localDescription.type,sdp:pc.localDescription.sdp}});
+  qrMode='single';$('#qrToggle').style.display='inline';showQR();
 };
 $('#qrToggle').onclick=()=>{qrChunks=splitChunks(qrPacked);qrIdx=0;qrMode=(qrMode==='single'?'multi':'single');showQR();};
 
-/* ===== Scanner (handles single OR chunked) ===== */
+/* Scanner */
 let asm={total:0,got:new Set(),parts:[]};
 function resetAsm(){asm={total:0,got:new Set(),parts:[]};$('#qrProgress').textContent='';}
 function absorb(text){
   if(text.startsWith(QR_PREFIX)){
     const rest=text.slice(QR_PREFIX.length);
-    const p1=rest.indexOf('|'), p2=rest.indexOf('|',p1+1);
-    if(p1<0||p2<0) return;
-    const total=+rest.slice(0,p1), index=+rest.slice(p1+1,p2), data=rest.slice(p2+1);
+    const p1=rest.indexOf('|'),p2=rest.indexOf('|',p1+1);if(p1<0||p2<0)return;
+    const total=+rest.slice(0,p1),index=+rest.slice(p1+1,p2),data=rest.slice(p2+1);
     if(!asm.total){asm.total=total;asm.parts=Array(total).fill('');}
     if(!asm.got.has(index)){asm.got.add(index);asm.parts[index-1]=data;$('#qrProgress').textContent=`Got ${asm.got.size}/${asm.total}`;}
     if(asm.got.size===asm.total){const packed=asm.parts.join('');resetAsm();applyPacked(packed);}
-  }else{
-    // single QR packed payload
-    applyPacked(text);
-  }
+  }else{applyPacked(text);}
 }
 async function applyPacked(packed){
   try{
     const obj=unpack(packed);
-    if(!pc) pc=newPCLocal(), attachPCHandlers();
-    if(role==='host' && obj.role==='join'){
+    if(!pc)pc=newPCLocal(),attachPCHandlers();
+    if(role==='host'&&obj.role==='join'){
       await pc.setRemoteDescription(obj.sdp);
-      log('QR: answer applied — connecting…');
-    }else if(role==='join' && obj.role==='host'){
+      log('QR: answer applied — connected soon');
+    }else if(role==='join'&&obj.role==='host'){
       await pc.setRemoteDescription(obj.sdp);
-      const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
-      await waitIceComplete(pc);
-      // show reply back to host (single by default)
-      qrPacked=pack({role,sdp:pc.localDescription});
-      qrMode='single'; $('#qrToggle').style.display='inline'; showQR();
-      log('QR: reply ready.');
-    }else{
-      alert('Role mismatch. One must be Host, the other Joiner.');
+      const ans=await pc.createAnswer();await pc.setLocalDescription(ans);await waitIceComplete(pc);
+      qrPacked=pack({role,sdp:{type:pc.localDescription.type,sdp:pc.localDescription.sdp}});
+      qrMode='single';$('#qrToggle').style.display='inline';showQR();
+      log('QR: reply ready');
     }
-  }catch(e){console.error(e);log('ERR applyPacked', e.message||e);}
+  }catch(e){console.error(e);log('ERR applyPacked',e.message||e);}
 }
-$('#qrApply').onclick=()=>{const t=$('#qrPaste').value.trim(); if(t){absorb(t); $('#qrPaste').value='';}};
-
+$('#qrApply').onclick=()=>{const t=$('#qrPaste').value.trim();if(t){absorb(t);$('#qrPaste').value='';}};
 let scanner=null;
-$('#scanStart').onclick=()=>{
-  try{
-    scanner=new Html5Qrcode("reader");
-    scanner.start({facingMode:"environment"},{fps:10,qrbox:220},txt=>absorb(txt),_=>{}).catch(err=>{console.error(err);log('scanner.start ERR',err.message||err);});
-  }catch(e){console.error(e);log('scanner init ERR',e.message||e);}
-};
+$('#scanStart').onclick=()=>{scanner=new Html5Qrcode("reader");scanner.start({facingMode:"environment"},{fps:10,qrbox:220},txt=>absorb(txt)).catch(err=>log('scan ERR',err));};
 $('#scanStop').onclick=()=>{scanner?.stop().then(()=>scanner.clear()).catch(()=>{});scanner=null;};
 </script>
 </body>
