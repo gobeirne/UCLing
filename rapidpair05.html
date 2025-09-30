@@ -2,487 +2,539 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Rapid Pair — LAN QR (tiny SDP + v4 fallback)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rapid Pair — LAN QR (full)</title>
+
+<!--
+  ============
+  HOW THIS WORKS
+  ============
+  - This page establishes a WebRTC datachannel with *no STUN/TURN* (LAN only).
+  - It minimizes the SDP to a tiny payload: a single host IPv4 candidate + ufrag + pwd + DTLS fingerprint.
+  - That tiny payload is sent Host -> Joiner via QR; Joiner sets it as remote offer, creates a local answer,
+    then sends its own tiny SDP back via QR. Host sets it as remote answer. Done.
+  - Default QR is dense. If your camera struggles, click "⚠ Trouble scanning?" to switch to chunked
+    QR v4 codes (max 4 parts), navigated with Prev/Next buttons.
+  - Scanner stops as soon as the exchange completes or when a reply is shown.
+
+  ============
+  FILES NEEDED ALONGSIDE THIS HTML
+  ============
+  qrcode.js                (Kazuhiko Arase QRCode)
+  pako.min.js              (zlib deflate/inflate)
+  html5-qrcode.min.js      (mebjas/html5-qrcode)
+-->
+
 <style>
-  :root { --muted:#666; }
-  body{margin:0;padding:16px;font:15px/1.45 system-ui,Segoe UI,Roboto,Helvetica,Arial;background:#f7f7f8;color:#222}
-  h1{margin:0 0 12px;font-size:18px}
-  .row{display:grid;gap:12px;grid-template-columns:1fr}
-  @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
-  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px;margin:10px 0}
-  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
-  button:disabled{opacity:.55;cursor:not-allowed}
-  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
-  textarea{width:100%;height:110px;font:12px monospace}
-  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
-  .ok{background:#e8f5e9;color:#1b5e20} .warn{background:#fff8e1;color:#795548} .bad{background:#ffebee;color:#b71c1c}
-  #log{font-size:.85rem;max-height:240px;overflow:auto;white-space:pre-wrap;border:1px dashed #ddd;padding:8px;border-radius:8px;background:#fafafa}
-  .muted{color:var(--muted)}
-  #qrWrap svg{max-width:100%}
-  .qr-grid{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}
-  .qr-item{display:flex;flex-direction:column;align-items:center}
-  .qr-item svg{border:1px solid #ddd;border-radius:8px}
-  #reader{width:320px;max-width:100%;border:1px solid #ddd;border-radius:8px;overflow:hidden}
-  .qr-badges{display:flex;gap:6px;align-items:center;margin-top:6px}
-  .qr-idx{font-size:12px;color:#444}
-  #ver{color:#666;font-size:.8rem}
+  :root{
+    --bg:#f7f7f8; --fg:#222; --card:#fff; --muted:#666; --br:#ddd;
+    --ok-bg:#e8f5e9; --ok-fg:#1b5e20;
+    --warn-bg:#fff8e1; --warn-fg:#795548;
+    --bad-bg:#ffebee; --bad-fg:#b71c1c;
+  }
+  html,body { height:100%; }
+  body{
+    margin:0; padding:16px; background:var(--bg); color:var(--fg);
+    font:15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  }
+  h1{ margin:0 0 12px; font-size:20px; font-weight:700; }
+  h2{ margin:0 0 8px; font-size:16px; }
+  h3{ margin:0 0 8px; font-size:15px; }
+
+  .row{ display:grid; gap:12px; grid-template-columns:1fr; }
+  @media(min-width:900px){ .row{ grid-template-columns:1fr 1fr; } }
+
+  .card{
+    background:var(--card); border:1px solid var(--br); border-radius:12px;
+    padding:12px; margin:10px 0;
+  }
+  button{
+    padding:8px 12px; border-radius:10px; border:1px solid #ccc; background:#f5f5f5; cursor:pointer;
+  }
+  button:disabled{ opacity:.55; cursor:not-allowed; }
+  input,textarea{ padding:6px; border:1px solid #ccc; border-radius:8px; }
+  textarea{ width:100%; height:110px; font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  .status{
+    display:inline-block; padding:2px 8px; border-radius:999px; font-size:.9rem; vertical-align:middle;
+  }
+  .ok{ background:var(--ok-bg); color:var(--ok-fg); }
+  .warn{ background:var(--warn-bg); color:var(--warn-fg); }
+  .bad{ background:var(--bad-bg); color:var(--bad-fg); }
+
+  #log{
+    font-size:.85rem; max-height:280px; overflow:auto; white-space:pre-wrap;
+    border:1px dashed var(--br); padding:8px; border-radius:8px; background:#fafafa;
+  }
+
+  #qrWrap svg{ max-width:100%; height:auto; display:block; margin:auto; }
+  .muted{ color:var(--muted); font-size:.9rem; }
+  .qr-nav{ display:flex; gap:8px; align-items:center; justify-content:center; margin-top:8px; }
+  #ver{ color:#666; font-size:.85rem; font-weight:400; }
+  .pill{ font-size:.75rem; padding:2px 6px; border:1px solid var(--br); border-radius:999px; color:#333; background:#fff; }
 </style>
-<!-- local libs next to this file -->
+
+<!-- Local libs (place alongside this file) -->
 <script src="qrcode.js"></script>
 <script src="pako.min.js"></script>
 <script src="html5-qrcode.min.js"></script>
 </head>
 <body>
-<h1>Rapid Pair — LAN QR (tiny SDP + v4 fallback) <span id="ver">v0.8</span></h1>
+
+<h1>Rapid Pair — LAN QR <span id="ver">v10</span></h1>
 
 <div class="row">
+  <!-- Role -->
   <div class="card">
     <h2>Role</h2>
-    <button id="roleHost">Host</button>
-    <button id="roleJoin">Joiner</button>
-    <span id="roleBadge" class="status warn">no role</span>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="roleHost">Host</button>
+      <button id="roleJoin">Joiner</button>
+      <span id="roleBadge" class="status warn">no role</span>
+    </div>
+    <p class="muted" style="margin-top:8px;">
+      Same-LAN pairing via QR only. Default shows a single dense QR; if scanning is hard, click
+      <span class="pill">⚠ Trouble scanning?</span> and step through at most <b>4× QR v4</b> codes.
+    </p>
   </div>
+
+  <!-- Status / Logs -->
   <div class="card">
     <h2>Status</h2>
-    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
-    <div id="log"></div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      Peer: <span id="conn" class="status warn">idle</span>
+      DataChannel: <span id="dc" class="status warn">-</span>
+    </div>
+    <div id="log" style="margin-top:8px;"></div>
   </div>
 </div>
 
+<!-- QR Exchange -->
 <div class="card">
-  <h2>QR (offline, same LAN)</h2>
+  <h2>QR Exchange</h2>
   <div class="row">
+    <!-- Make / Show QR -->
     <div class="card">
-      <h3>Make & show my QR</h3>
-      <button id="qrMake" disabled>Create my QR</button>
-      <div class="qr-badges">
-        <button id="qrTrouble" style="display:none;">⚠ Trouble scanning? (v4 split)</button>
-        <label><input type="checkbox" id="robustECC"> Robust ECC (M)</label>
+      <h3>My QR</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="qrMake" disabled>Create my QR</button>
+        <button id="qrTrouble" style="display:none;">⚠ Trouble scanning?</button>
+        <button id="qrPrev" style="display:none;">◀ Prev</button>
+        <button id="qrNext" style="display:none;">Next ▶</button>
       </div>
-      <div id="qrWrap" style="margin-top:8px"></div>
+
+      <div id="qrWrap" style="margin-top:10px"></div>
+      <div id="qrMeta" class="muted" style="margin-top:6px"></div>
     </div>
+
+    <!-- Scan -->
     <div class="card">
       <h3>Scan partner QR</h3>
-      <button id="scanStart" disabled>Start Camera Scan</button>
-      <button id="scanStop" disabled>Stop</button>
-      <div id="reader"></div>
-      <textarea id="qrPaste" placeholder="(Fallback) Paste scanned text…"></textarea>
-      <button id="qrApply" disabled>Apply</button>
-      <div id="qrProgress" class="muted" style="margin-top:6px"></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="scanStart" disabled>Start Scan</button>
+        <button id="scanStop" disabled>Stop</button>
+        <button id="qrApply" disabled>Apply (from text)</button>
+      </div>
+      <div id="reader" style="width:320px; max-width:100%; margin-top:10px;"></div>
+      <textarea id="qrPaste" placeholder="Or paste payload / chunk here…"></textarea>
+      <div id="qrProgress" class="muted"></div>
     </div>
   </div>
-  <div class="muted">Tip: On the same LAN, this is instant. We include just one host IPv4 candidate to keep QR small and fast.</div>
 </div>
 
+<!-- Actions -->
 <div class="card">
   <h2>Actions</h2>
-  <button id="btnBeep" disabled>Beep</button>
-  <button id="btnChirp" disabled>Chirp</button>
-  <button id="btnPing" disabled>Ping</button>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <button id="btnBeep" disabled>Beep</button>
+    <button id="btnChirp" disabled>Chirp</button>
+    <button id="btnPing" disabled>Ping</button>
+  </div>
 </div>
 
 <script>
-/* ========= Tiny logger ========= */
-const $ = s=>document.querySelector(s), logEl=$('#log');
-function log(...a){ const line=a.join(' '); console.log('[LOG]', line); logEl.textContent+=line+"\n"; logEl.scrollTop=logEl.scrollHeight; }
-function badge(el,t,c){ el.textContent=t; el.className='status '+c; }
+/* ============================================================
+   Utilities / UI helpers
+   ============================================================ */
+const $ = s => document.querySelector(s);
+const logEl = $('#log');
 
-/* ========= Base64URL + pack ========= */
+function log(...a){
+  const line = a.join(' ');
+  console.log('[LOG]', line);
+  logEl.textContent += line + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function badge(el, t, c){ el.textContent = t; el.className = 'status ' + c; }
+
+/* Base64url + deflate payloads (deterministic & QR-friendly) */
 function b64urlFromU8(u8){
-  let bin=''; for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
-  const b64=btoa(bin);
-  return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  let bin = '';
+  for(let i=0;i<u8.length;i++) bin += String.fromCharCode(u8[i]);
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 function u8FromB64url(s){
-  const b64=s.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(s.length/4)*4,'=');
-  const bin=atob(b64); const u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  const b64 = s.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(s.length/4)*4,'=');
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
   return u8;
 }
-function pack(obj){
-  const json = new TextEncoder().encode(JSON.stringify(obj));
-  const def = pako.deflate(json);
-  return 'U2|' + b64urlFromU8(def);
-}
-function unpack(txt){
-  if(txt.startsWith('U2|')) txt = txt.slice(3);
-  const u8 = u8FromB64url(txt);
-  const inf = pako.inflate(u8);
-  return JSON.parse(new TextDecoder().decode(inf));
+function pack(obj){ return 'U10|' + b64urlFromU8(pako.deflate(JSON.stringify(obj))); }
+function unpack(s){
+  if(s.startsWith('U10|')) s = s.slice(4);
+  const u8 = u8FromB64url(s);
+  return JSON.parse(pako.inflate(u8, {to:'string'}));
 }
 
-/* ========= Role + UI ========= */
-let role=null;
-function setRole(r){
-  role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
-  const isHost = r==='host';
-  $('#qrMake').disabled=false;
-  $('#scanStart').disabled=false;
-  $('#scanStop').disabled=false;
-  $('#qrApply').disabled=false;
-  log(`Role set to ${r}`);
-}
-$('#roleHost').onclick=()=>setRole('host');
-$('#roleJoin').onclick=()=>setRole('join');
+/* ============================================================
+   WebRTC
+   ============================================================ */
+let role = null;
+let pc   = null;
+let dc   = null;
+let scanner = null;
 
-/* ========= WebRTC core ========= */
-let pc=null, dc=null, scanner=null;
-/** Prefer LAN-only: no STUN/TURN for speed. */
 function newPC(){
-  const cfg = {iceServers:[]};
-  const p = new RTCPeerConnection(cfg);
-
-  p.onicegatheringstatechange = ()=>log('gathering:', p.iceGatheringState);
-  p.oniceconnectionstatechange = ()=>{ 
-    log('ice:', p.iceConnectionState);
-    const s=p.iceConnectionState;
-    badge($('#conn'), s, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
+  const p = new RTCPeerConnection({ iceServers: [] }); // LAN-only (no STUN/TURN)
+  p.oniceconnectionstatechange = ()=>{
+    const s = p.iceConnectionState;
+    badge($('#conn'), s, s==='connected'?'ok':(s==='failed'?'bad':'warn'));
+    if(s==='connected'){ stopScanner(); }
   };
-  p.onsignalingstatechange = ()=>log('signal:', p.signalingState);
   p.onconnectionstatechange = ()=>{
     const s = p.connectionState;
-    badge($('#conn'), s, s==='connected'?'ok':(s==='failed'?'bad':'warn'));
-    const ok = s==='connected';
-    ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!ok);
-    if(ok) stopScanner();
+    const up = s==='connected';
+    ['#btnBeep','#btnChirp','#btnPing'].forEach(id => $(id).disabled = !up);
+    if(up){ badge($('#dc'),'open','ok'); stopScanner(); }
   };
-  p.ondatachannel = e=>{ dc=e.channel; attachDC(); };
+  p.onsignalingstatechange = ()=> log('signal:', p.signalingState);
+  p.onicegatheringstatechange = ()=> log('gathering:', p.iceGatheringState);
+  p.ondatachannel = e => {
+    dc = e.channel;
+    dc.onopen    = ()=> badge($('#dc'),'open','ok');
+    dc.onclose   = ()=> badge($('#dc'),'closed','bad');
+    dc.onmessage = ev => log('RX', ev.data);
+  };
   return p;
 }
-function attachDC(){
-  if(!dc) return;
-  badge($('#dc'), dc.readyState, dc.readyState==='open'?'ok':'warn');
-  dc.onopen=()=>badge($('#dc'),'open','ok');
-  dc.onclose=()=>badge($('#dc'),'closed','bad');
-  dc.onmessage=e=>log('RX', e.data);
+function send(m){
+  if(dc && dc.readyState==='open'){
+    dc.send(m); log('TX', m);
+  } else {
+    log('WARN: DC not open, cannot send', m);
+  }
 }
-function send(m){ if(dc&&dc.readyState==='open') dc.send(m); }
-$('#btnBeep').onclick = ()=>send('BEEP');
-$('#btnChirp').onclick= ()=>send('CHIRP');
-$('#btnPing').onclick = ()=>send('PING');
 
-/* ========= SDP minification helpers ========= */
-/** pick first host IPv4 candidate from a local SDP */
+/* Buttons (role) */
+$('#roleHost').onclick = ()=>{
+  role = 'host';
+  badge($('#roleBadge'), 'Host', 'ok');
+  enableUI();
+  log('Role set to host');
+};
+$('#roleJoin').onclick = ()=>{
+  role = 'join';
+  badge($('#roleBadge'), 'Joiner', 'ok');
+  enableUI();
+  log('Role set to joiner');
+};
+function enableUI(){
+  $('#qrMake').disabled = false;
+  $('#scanStart').disabled = false;
+  $('#scanStop').disabled = false;
+  $('#qrApply').disabled = false;
+}
+
+/* ============================================================
+   SDP minimisation: take only what's needed and tiny
+   ============================================================ */
+function extract(re, sdp){ const m = sdp.match(re); return m ? m[1] : null; }
 function pickHostV4Candidate(sdp){
+  // Prefer an IPv4 host candidate; we ignore IPv6 and relay/srflx for tiny payload
   const lines = sdp.split(/\r?\n/);
-  let candLine = null;
-  for(const ln of lines){
-    if(!ln.startsWith('a=candidate:')) continue;
-    // a=candidate:... <comp> <proto> <prio> <ip> <port> typ <type> ...
-    const m = ln.match(/^a=candidate:[^\s]+\s+\d+\s+\S+\s+\d+\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+typ\s+(\S+)/);
-    if(!m) continue;
-    const ip=m[1], port=m[2], typ=m[3];
-    // private IPv4 ranges only
-    if(typ==='host' && (
-      ip.startsWith('10.') ||
-      ip.startsWith('192.168.') ||
-      (ip.startsWith('172.') && (parseInt(ip.split('.')[1],10)>=16 && parseInt(ip.split('.')[1],10)<=31))
-    )){
-      candLine = ln.trim();
-      break;
-    }
+  // Strongest preference: host v4 UDP
+  for(const l of lines){
+    if(l.startsWith('a=candidate:') && / typ host /.test(l) && /\d+\.\d+\.\d+\.\d+/.test(l) && / udp /.test(l)) return l;
   }
-  return candLine;
-}
-function extractField(re, sdp, label){
-  const m = sdp.match(re);
-  if(!m){ log(`WARN missing ${label} in local SDP`); return null; }
-  return m[1];
-}
-/** build a tiny application-only SDP (datachannel) with one host v4 candidate */
-function buildTinySDP(fromLocal){
-  const ufrag = extractField(/^a=ice-ufrag:([^\r\n]+)/m, fromLocal, 'ice-ufrag');
-  const pwd   = extractField(/^a=ice-pwd:([^\r\n]+)/m, fromLocal, 'ice-pwd');
-  const fp    = extractField(/^a=fingerprint:sha-256\s+([A-F0-9:]+)/m, fromLocal, 'fingerprint');
-  const cand  = pickHostV4Candidate(fromLocal);
-  if(!ufrag || !pwd || !fp || !cand){
-    throw new Error('tinySDP: missing one of ufrag/pwd/fingerprint/hostv4 candidate');
+  // Fallback: any host v4
+  for(const l of lines){
+    if(l.startsWith('a=candidate:') && / typ host /.test(l) && /\d+\.\d+\.\d+\.\d+/.test(l)) return l;
   }
-  // Minimal datachannel m-section with a single candidate
-  return [
-    'v=0',
-    'o=- 0 0 IN IP4 127.0.0.1',
-    's=-',
-    't=0 0',
-    'a=group:BUNDLE 0',
-    'a=extmap-allow-mixed',
-    'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
-    'c=IN IP4 0.0.0.0',
-    `a=ice-ufrag:${ufrag}`,
-    `a=ice-pwd:${pwd}`,
-    `a=fingerprint:sha-256 ${fp}`,
-    'a=setup:actpass',
-    'a=mid:0',
-    'a=sctp-port:5000',
-    'a=max-message-size:262144',
-    cand
-  ].join('\r\n') + '\r\n';
+  return null;
+}
+function buildTinySDP(localSdp){
+  const ufrag = extract(/^a=ice-ufrag:(\S+)/m, localSdp);
+  const pwd   = extract(/^a=ice-pwd:(\S+)/m, localSdp);
+  const fp    = extract(/^a=fingerprint:sha-256\s+([A-F0-9:]+)/m, localSdp);
+  const cand  = pickHostV4Candidate(localSdp);
+
+  if(!ufrag || !pwd || !fp || !cand) throw Error('tinySDP missing pieces');
+
+  // Minimal valid SDP for datachannel; we strip everything but a single host v4 candidate
+  return `v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+c=IN IP4 0.0.0.0
+a=ice-ufrag:${ufrag}
+a=ice-pwd:${pwd}
+a=fingerprint:sha-256 ${fp}
+a=setup:actpass
+a=mid:0
+a=sctp-port:5000
+a=max-message-size:262144
+${cand}\r\n`;
 }
 
-/* ========= QR rendering (single dense + v4 fallback) ========= */
-const QR_PREFIX='U2|'; // already used in pack()
-const V4_MAX_SAFE = 80; // qrcode v4 L shows ~640 bits => ~80 bytes; keep headroom per chunk header
-const CHUNK_PAYLOAD = 60; // conservative payload per v4 chunk
+/* ============================================================
+   QR rendering + chunking (v4 fallback)
+   ============================================================ */
+let lastPacked = '';         // last single packed payload we rendered
+let chunkList  = [];         // when chunked
+let chunkIdx   = 0;          // current index in chunked flow
 
-function renderQR(svgContainer, text, version=0, ecc='L'){
-  const qr = qrcode(version, ecc); // version 0 => auto
-  qr.addData(text);
-  qr.make();
-  const svg = qr.createSvgTag(4); // scale
-  svgContainer.innerHTML = svg;
-}
+// Conservative safe capacity for QR version-4, ECC=L (leave headroom): ~600 chars
+const V4_SAFE = 600;
 
-/** split packed into N v4 chunks with minimal count */
-function splitForV4(packed){
-  // Header for chunks: U2C|N|i|...
-  // Keep chunk payload <= CHUNK_PAYLOAD
-  const chunks = [];
-  const N = Math.ceil(packed.length / CHUNK_PAYLOAD);
+/* Split a base64url string into <=4 chunks, each wrapped with header U10C|N|i| */
+function toV4Chunks(packed){
+  const N = Math.ceil(packed.length / V4_SAFE);
+  if(N <= 1) return null;
+  if(N > 4)  return null; // hard cap at 4 chunks (your requirement)
+  const arr = [];
   for(let i=0;i<N;i++){
-    const seg = packed.slice(i*CHUNK_PAYLOAD, (i+1)*CHUNK_PAYLOAD);
-    chunks.push(`U2C|${N}|${i+1}|${seg}`);
+    const part = packed.slice(i*V4_SAFE, (i+1)*V4_SAFE);
+    arr.push(`U10C|${N}|${i+1}|${part}`);
   }
-  return chunks;
+  return arr;
 }
-function tryRenderSingleOrOfferSplit(packed){
-  const ecc = $('#robustECC').checked ? 'M' : 'L';
-  $('#qrWrap').innerHTML='';
-  $('#qrTrouble').style.display='none';
 
-  try{
-    renderQR($('#qrWrap'), packed, 0, ecc); // auto size big dense QR
-    $('#qrTrouble').style.display='inline';
-    log('QR: single dense rendered');
-  }catch(e){
-    log('QR single overflow, splitting into v4...', e.message||e);
-    showV4Grid(packed);
+/* Render a dense single QR (auto version) */
+function renderDense(packed){
+  lastPacked = packed;
+  const q = qrcode(0, 'L'); // auto version, ECC=L
+  q.addData(packed);
+  q.make();
+  $('#qrWrap').innerHTML = q.createSvgTag(6);
+  $('#qrMeta').textContent = `Dense QR (${packed.length} chars) — if scanning is hard, click "Trouble scanning?"`;
+  $('#qrTrouble').style.display = 'inline';
+  $('#qrPrev').style.display = 'none';
+  $('#qrNext').style.display = 'none';
+}
+
+/* Render chunked QR v4 with Next/Prev */
+function renderChunks(arr){
+  chunkList = arr;
+  chunkIdx = 0;
+  showChunk();
+}
+function showChunk(){
+  const payload = chunkList[chunkIdx];
+  const q = qrcode(4, 'L'); // Version 4 (33x33), ECC L for capacity
+  q.addData(payload);
+  q.make();
+  $('#qrWrap').innerHTML = q.createSvgTag(6);
+  $('#qrMeta').textContent = `Part ${chunkIdx+1} of ${chunkList.length} — ${payload.length} chars (v4)`;
+  $('#qrPrev').style.display = chunkIdx>0 ? 'inline' : 'none';
+  $('#qrNext').style.display = chunkIdx < (chunkList.length-1) ? 'inline' : 'none';
+}
+
+$('#qrPrev').onclick = ()=>{ if(chunkIdx>0){ chunkIdx--; showChunk(); } };
+$('#qrNext').onclick = ()=>{ if(chunkIdx<chunkList.length-1){ chunkIdx++; showChunk(); } };
+
+/* ============================================================
+   Make my QR (Host OR Joiner)
+   ============================================================ */
+$('#qrMake').onclick = async ()=>{
+  if(!role){ alert('Pick Host or Joiner'); return; }
+
+  if(role === 'host'){
+    // Host creates offer, waits for first host v4 candidate, then renders QR
+    pc = newPC();
+    dc = pc.createDataChannel('x'); // create DC on host side
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    log('Host setLocalDescription(offer). Waiting for first host IPv4 candidate…');
+
+    let done = false;
+    pc.onicecandidate = (e)=>{
+      if(done) return;
+      if(e.candidate){
+        const c = e.candidate.candidate || '';
+        // We only care about the *first* host IPv4 UDP candidate to be tiny & fast
+        if(/ typ host /.test(c) && /\d+\.\d+\.\d+\.\d+/.test(c) && / udp /.test(c)){
+          done = true;
+          log('First host candidate:', c);
+          try{
+            const tiny = buildTinySDP(pc.localDescription.sdp);
+            const packed = pack({ r:'h', s: tiny });  // r=host, s=sdptiny
+            const v4 = toV4Chunks(packed);
+            if(v4) renderChunks(v4); else renderDense(packed);
+          }catch(err){
+            log('ERR building tiny host SDP', err.message||err);
+          }
+        }
+      }
+    };
+    // Failsafe: if gathering ends but we didn’t see v4, try any host v4 line from gathered SDP
+    pc.onicegatheringstatechange = ()=>{
+      if(pc.iceGatheringState === 'complete'){
+        if(!lastPacked && !chunkList.length){
+          try{
+            const tiny = buildTinySDP(pc.localDescription.sdp);
+            const packed = pack({ r:'h', s: tiny });
+            const v4 = toV4Chunks(packed);
+            if(v4) renderChunks(v4); else renderDense(packed);
+            log('Gathering complete — using first available host v4 candidate from SDP.');
+          }catch(err){
+            log('ERR after complete (host):', err.message||err);
+          }
+        }
+      }
+    };
+
+  }else{
+    // Joiner: you typically scan the Host QR FIRST.
+    log('Joiner: scan Host QR first, then this pane will show your reply QR automatically.');
   }
-}
-function showV4Grid(packed){
-  const ecc = $('#robustECC').checked ? 'M' : 'L';
-  const chunks = splitForV4(packed);
-  const grid = document.createElement('div');
-  grid.className='qr-grid';
-  $('#qrWrap').innerHTML='';
-  const version = 4; // fixed version 4
+};
 
-  chunks.forEach((c, idx)=>{
-    const item = document.createElement('div');
-    item.className='qr-item';
-    const box = document.createElement('div');
-    box.style.maxWidth='156px';
-    renderQR(box, c, version, ecc);
-    const cap = document.createElement('div');
-    cap.className='qr-idx';
-    cap.textContent = `Part ${idx+1}/${chunks.length}`;
-    item.appendChild(box);
-    item.appendChild(cap);
-    grid.appendChild(item);
-  });
-  $('#qrWrap').appendChild(grid);
-  $('#qrTrouble').style.display='none';
-  log(`QR: rendered ${chunks.length} × v4`);
-}
+/* "Trouble scanning?" switches dense -> v4 chunks (if possible) */
+$('#qrTrouble').onclick = ()=>{
+  if(lastPacked){
+    const arr = toV4Chunks(lastPacked);
+    if(arr){ renderChunks(arr); }
+    else { log('No need to split: dense payload already small enough for v4 (or too small to split).'); }
+  }else{
+    log('No dense payload to split yet.');
+  }
+};
 
-/* ========= QR assemble / scanner ========= */
-let asm = {total:0, got:new Set(), parts:[]};
+/* ============================================================
+   Scanner + assembly
+   ============================================================ */
+let asm = { total:0, parts:[] };
 
 function resetAsm(){
-  asm = {total:0,got:new Set(),parts:[]};
-  $('#qrProgress').textContent='';
+  asm = { total:0, parts:[] };
+  $('#qrProgress').textContent = '';
 }
-function absorb(txt){
-  // Chunked?
-  if(txt.startsWith('U2C|')){
-    const rest = txt.slice(4);
-    const p1 = rest.indexOf('|'), p2 = rest.indexOf('|', p1+1);
-    if(p1<0||p2<0){ log('ERR chunk header parse'); return; }
-    const total = +rest.slice(0,p1);
-    const index = +rest.slice(p1+1,p2);
-    const data  = rest.slice(p2+1);
-
-    if(!asm.total){ asm.total = total; asm.parts = Array(total).fill(''); }
-    asm.got.add(index); asm.parts[index-1]=data;
-    $('#qrProgress').textContent = `Got parts: ${[...asm.got].sort().join(', ')} / ${asm.total}`;
-
-    if(asm.got.size===asm.total){
-      const packed = asm.parts.join('');
-      resetAsm();
-      applyPacked(packed);
-    }
-    return;
-  }
-  // Single packed
-  applyPacked(txt);
-}
-
-/* ========= Build + show my QR (Host or Joiner) ========= */
-async function showHostQR(){
-  if(!pc) pc=newPC();
-  if(dc) try{ dc.close(); }catch{}
-  dc = pc.createDataChannel('x'); attachDC();
-
-  // We'll render as soon as we see the first host v4 candidate
-  let firstShown = false;
-  pc.onicecandidate = e=>{
-    if(firstShown || !e.candidate) return;
-    // after setLocalDescription(offer), candidate events include host v4 quickly
-    const candStr = 'candidate:' + e.candidate.candidate.split('candidate:')[1];
-    if(!/ typ host /.test(candStr)) return; // ignore non-host
-    const m = candStr.match(/\s(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+typ/);
+function absorb(text){
+  // Chunk header: U10C|N|i|<data>
+  if(text.startsWith('U10C|')){
+    const m = /^U10C\|(\d+)\|(\d+)\|(.*)$/.exec(text);
     if(!m) return;
-    // Build tiny SDP now using localDescription
-    try{
-      const tiny = buildTinySDP(pc.localDescription.sdp);
-      const packed = pack({r:'h', t:'o', s: tiny});
-      log('Host: first host candidate. Rendering QR…');
-      tryRenderSingleOrOfferSplit(packed);
-      firstShown = true;
-    }catch(err){
-      log('ERR tinySDP host', err.message||err);
+    const N = +m[1], i = +m[2], d = m[3];
+    if(!asm.total){
+      asm.total = N; asm.parts = Array(N).fill('');
     }
-  };
-
-  const offer = await pc.createOffer({iceRestart:false});
-  await pc.setLocalDescription(offer);
-  log('Host setLocalDescription(offer). Waiting for first host candidate…');
-
-  // Safety: if nothing after 1.5s but gathering complete, try anyway (may still be LAN host cand inside SDP)
-  const t0 = Date.now();
-  const guard = setInterval(()=>{
-    if(firstShown) { clearInterval(guard); return; }
-    if(pc.iceGatheringState==='complete' || Date.now()-t0>2500){
-      clearInterval(guard);
-      try{
-        const tiny = buildTinySDP(pc.localDescription.sdp);
-        const packed = pack({r:'h', t:'o', s: tiny});
-        log('Host: guard fired. Rendering QR from gathered SDP.');
-        tryRenderSingleOrOfferSplit(packed);
-        firstShown = true;
-      }catch(err){
-        log('ERR guard tinySDP host', err.message||err);
-      }
+    asm.parts[i-1] = d;
+    const got = asm.parts.filter(x=>x).length;
+    $('#qrProgress').textContent = `Got ${got} / ${N} parts`;
+    if(got === N){
+      const joined = asm.parts.join('');
+      resetAsm();
+      applyPacked(joined);
     }
-  }, 150);
+  } else {
+    applyPacked(text);
+  }
 }
 
-async function showJoinerQR(){
-  // Joiner shouldn't create its QR immediately. The Joiner **scans Host** first,
-  // then we create pc (if needed), set remote offer, create answer, and show QR.
-  log('Joiner: waiting to scan Host QR (offer) — then I will show my QR automatically.');
-}
-
-/* ========= Apply packed (from scanning or pasted) ========= */
 async function applyPacked(packed){
   try{
-    const obj = unpack(packed);
-    if(!pc) pc=newPC();
+    const obj = unpack(packed); // { r:'h'|'j', s:tinySDP }
+    if(!obj || !obj.r || !obj.s) throw Error('bad payload');
 
-    if(role==='join' && obj.r==='h' && obj.t==='o'){
-      // Joiner got Host offer
-      log('Joiner: got Host offer');
-      await pc.setRemoteDescription({type:'offer', sdp: obj.s});
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      // Build tiny answer SDP with one host v4 candidate (wait briefly for host v4)
-      let tinyAns=null;
-      const t0 = Date.now();
-      await new Promise(resolve=>{
-        const onCand = ()=> {
-          try{
-            tinyAns = buildTinySDP(pc.localDescription.sdp);
-            resolve();
-          }catch{
-            if(pc.iceGatheringState==='complete' || Date.now()-t0>1500) resolve();
-          }
-        };
-        pc.onicecandidate = e=>{
-          if(!e.candidate) { onCand(); return; }
-          const s = e.candidate.candidate;
-          if(/ typ host /.test(s) && /\d+\.\d+\.\d+\.\d+/.test(s)) onCand();
-        };
-        // also a timer in case no onicecandidate fires
-        setTimeout(onCand, 1600);
-      });
-      if(!tinyAns){
-        tinyAns = buildTinySDP(pc.localDescription.sdp); // last resort, throws if truly missing
+    if(role === 'join' && obj.r === 'h'){
+      // Joiner receives Host tiny offer -> make pc, set remote offer, create answer, show reply QR
+      if(!pc) pc = newPC();
+      if(pc.signalingState !== 'stable'){
+        // If we got here in a weird state, reset
+        try{ pc.close(); }catch{}
+        pc = newPC();
       }
-      const packedAns = pack({r:'j', t:'a', s: tinyAns});
-      tryRenderSingleOrOfferSplit(packedAns);
-      log('Joiner: answer ready — show this QR to Host.');
-      stopScanner(); // we’re done on Joiner side
-      return;
-    }
 
-    if(role==='host' && obj.r==='j' && obj.t==='a'){
-      // Host got Joiner answer
-      log('Host: got Joiner answer');
-      await pc.setRemoteDescription({type:'answer', sdp: obj.s});
-      stopScanner(); // we’re done
-      return;
-    }
+      await pc.setRemoteDescription({ type:'offer', sdp:obj.s });
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
 
-    log('ERR role/type mismatch or unsupported payload', JSON.stringify(obj));
+      const tiny = buildTinySDP(pc.localDescription.sdp);
+      const reply = pack({ r:'j', s: tiny });
+      const v4 = toV4Chunks(reply);
+      if(v4) renderChunks(v4); else renderDense(reply);
+
+      // Once we render reply, we can stop scanning (no more input needed on this side)
+      stopScanner();
+      log('Joiner: reply ready — show this QR to Host.');
+
+    } else if(role === 'host' && obj.r === 'j'){
+      // Host receives Joiner tiny answer -> set remote answer, we’re done
+      if(!pc){
+        // If somehow Host pc vanished, create a new one and try to recover
+        pc = newPC();
+        dc = pc.createDataChannel('x');
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+      }
+      if(pc.signalingState === 'have-local-offer' || pc.signalingState === 'stable'){
+        await pc.setRemoteDescription({ type:'answer', sdp:obj.s });
+        log('Host: setRemoteDescription(answer) — handshake complete.');
+        stopScanner();
+      } else {
+        log('WARN host in unexpected state', pc.signalingState, '— trying anyway.');
+        await pc.setRemoteDescription({ type:'answer', sdp:obj.s }).catch(e=>log('ERR setRemoteDescription(answer)', e.message||e));
+        stopScanner();
+      }
+
+    } else {
+      log('ERR role mismatch or unexpected payload', 'me=',role, 'peer=',obj.r);
+    }
   }catch(e){
-    log('ERR', e.message||e);
+    log('ERR applyPacked', e.message||e);
   }
 }
 
-/* ========= Camera scanner ========= */
-function stopScanner(){
-  if(!scanner) return;
-  scanner.stop().then(()=>scanner.clear()).catch(()=>{}); 
-  scanner=null;
-  $('#scanStart').disabled=false;
-  $('#scanStop').disabled=true;
-  log('Scanner stopped');
-}
-$('#scanStart').onclick=()=>{
+/* Camera control */
+$('#scanStart').onclick = ()=>{
   try{
     scanner = new Html5Qrcode("reader");
     scanner.start(
-      {facingMode:"environment"},
-      {fps:10, qrbox:240},
-      txt => absorb(txt),
-      _err => {}
-    ).then(()=>{
-      $('#scanStart').disabled=true;
-      $('#scanStop').disabled=false;
-      log('Scanner started');
-    }).catch(err=>log('scan start ERR', err));
+      { facingMode: "environment" },
+      { fps: 10, qrbox: 240 },
+      t => absorb(t),
+      _e => {}
+    ).then(()=>log('Scanner started'))
+     .catch(err=>log('scan start ERR', err?.message||err));
   }catch(e){ log('scanner init ERR', e.message||e); }
 };
-$('#scanStop').onclick=()=>stopScanner();
+$('#scanStop').onclick = stopScanner;
 
-/* ========= Buttons ========= */
-$('#qrMake').onclick=async()=>{
-  if(!role){ alert('Pick role first'); return; }
-  if(role==='host') await showHostQR();
-  else await showJoinerQR();
-};
-$('#qrTrouble').onclick=()=>{
-  // Re-render whatever’s currently in #qrWrap as v4 grid by re-splitting from the last packed
-  // We don’t keep the last packed globally, so pick it from the current QR text by asking user to paste if needed.
-  // Simpler: store lastPacked when we render.
-  if(window.__lastPacked){
-    showV4Grid(window.__lastPacked);
-  }else{
-    log('No cached payload to split — will split the next one you generate.');
+function stopScanner(){
+  if(scanner){
+    scanner.stop().then(()=>scanner.clear()).catch(()=>{});
+    scanner = null;
+    log('Scanner stopped');
   }
+}
+
+/* Manual paste */
+$('#qrApply').onclick = ()=>{
+  const t = $('#qrPaste').value.trim();
+  if(t){ absorb(t); }
 };
-$('#qrApply').onclick=()=>{ const t=$('#qrPaste').value.trim(); if(t){ absorb(t); $('#qrPaste').value=''; } };
 
-/* Capture last packed whenever we render single or v4 */
-const _origTryRender = tryRenderSingleOrOfferSplit;
-tryRenderSingleOrOfferSplit = function(packed){ window.__lastPacked = packed; _origTryRender(packed); };
-const _origShowV4 = showV4Grid;
-showV4Grid = function(packed){ window.__lastPacked = packed; _origShowV4(packed); };
+/* ============================================================
+   Actions (once connected)
+   ============================================================ */
+$('#btnBeep').onclick  = ()=>send('BEEP');
+$('#btnChirp').onclick = ()=>send('CHIRP');
+$('#btnPing').onclick  = ()=>send('PING');
 
-/* ========= Page init ========= */
-log('Ready. Pick Host/Joiner. For instant LAN, this uses one host IPv4 candidate and a tiny SDP.');
-badge($('#conn'),'idle','warn');
-badge($('#dc'),'-','warn');
+/* Boot note */
+log('Ready. Pick Host/Joiner. For instant LAN, the single dense QR should work; fallback to "Trouble scanning?" for up to 4× v4 parts.');
 </script>
 </body>
 </html>
