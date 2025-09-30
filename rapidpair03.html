@@ -21,12 +21,13 @@
   #ver{color:#666;font-size:.8rem}
   .muted{color:#666;font-size:.9rem}
 </style>
+<!-- local libs -->
 <script src="qrcode.js"></script>
 <script src="pako.min.js"></script>
 <script src="html5-qrcode.min.js"></script>
 </head>
 <body>
-<h1>Rapid Pair — Minimal LAN QR <span id="ver">v3.0</span></h1>
+<h1>Rapid Pair — Minimal LAN QR <span id="ver">v4.0</span></h1>
 
 <div class="row">
   <div class="card">
@@ -72,7 +73,7 @@
 <script>
 /* ====== Helpers ====== */
 const $=s=>document.querySelector(s), logEl=$('#log');
-function log(...a){logEl.textContent+=a.join(' ')+"\\n";logEl.scrollTop=logEl.scrollHeight;}
+function log(...a){logEl.textContent+=a.join(' ')+"\n";logEl.scrollTop=logEl.scrollHeight;}
 function badge(el,t,c){el.textContent=t;el.className='status '+c;}
 function b64url(u8){let bin='';for(let i=0;i<u8.length;i++)bin+=String.fromCharCode(u8[i]);const b64=btoa(bin);let out='';for(let i=0;i<b64.length;i++){const ch=b64[i];if(ch==='+')out+='-';else if(ch==='/')out+='_';else if(ch==='='){}else out+=ch;}return out;}
 function unb64url(s){let b64='';for(let i=0;i<s.length;i++){const ch=s[i];if(ch==='-')b64+='+';else if(ch==='_')b64+='/';else b64+=ch;}while(b64.length%4)b64+='=';const bin=atob(b64);const u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);return u8;}
@@ -83,7 +84,7 @@ function unpack(s){return JSON.parse(pako.inflate(unb64url(s),{to:'string'}));}
 let role=null;
 function setRole(r){
   role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
-  $('#qrMake').disabled=(r==='join'); // joiner QR made automatically after scanning host
+  $('#qrMake').disabled=(r==='join'); // joiner creates QR after scanning host
   $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
 }
 $('#roleHost').onclick=()=>setRole('host');
@@ -108,16 +109,25 @@ $('#btnBeep').onclick=()=>send('BEEP');
 $('#btnChirp').onclick=()=>send('CHIRP');
 $('#btnPing').onclick=()=>send('PING');
 
-/* ====== Minimal SDP builder ====== */
-function extractParams(sdp){
-  const lines=sdp.split(/\\r?\\n/);
-  const ipPortLine=lines.find(l=>l.startsWith('a=candidate:')&&/ typ host/.test(l));
-  const candParts=ipPortLine.trim().split(/\\s+/);
-  const ip=candParts[4], port=parseInt(candParts[5],10);
-  const ufrag=lines.find(l=>l.startsWith('a=ice-ufrag:')).split(':')[1];
-  const pwd=lines.find(l=>l.startsWith('a=ice-pwd:')).split(':')[1];
-  const fp=lines.find(l=>l.startsWith('a=fingerprint:')).split(' ')[1];
-  return {ip,port,ufrag,pwd,fingerprint:fp};
+/* ====== Minimal SDP helpers ====== */
+function getLineValue(sdp,prefix){
+  const line = sdp.split(/\r?\n/).find(l=>l.startsWith(prefix));
+  return line ? line.substring(prefix.length) : null;
+}
+function parseHostCandidate(candidateStr){
+  // a=candidate:... <component-id> <transport> <priority> <ip> <port> typ host ...
+  const parts = candidateStr.trim().split(/\s+/);
+  return {ip: parts[4], port: parseInt(parts[5],10)};
+}
+function extractParamsFrom(ld, candStr){
+  const {ip,port}=parseHostCandidate(candStr);
+  const sdp=ld.sdp;
+  const ufrag=getLineValue(sdp,'a=ice-ufrag:');
+  const pwd=getLineValue(sdp,'a=ice-pwd:');
+  const fpLine=getLineValue(sdp,'a=fingerprint:'); // e.g. "sha-256 XX:YY:.."
+  const fingerprint = fpLine ? fpLine.split(' ')[1] : null;
+  if(!ip||!port||!ufrag||!pwd||!fingerprint){ throw new Error('missing params for QR'); }
+  return {ip,port,ufrag,pwd,fingerprint};
 }
 function buildSDP(type, ip, port, ufrag, pwd, fingerprint){
   return `v=0
@@ -142,27 +152,29 @@ a=end-of-candidates`;
 
 /* ====== QR handling ====== */
 function renderQR(txt){
-  const ecc='M'; // robust
+  const ecc='M';
   const q=qrcode(0,ecc); q.addData(txt); q.make();
-  return q.createSvgTag(6); // scale
+  return q.createSvgTag(6); // chunky version 2–3
 }
-function showQR(packed){
-  $('#qrWrap').innerHTML=renderQR(packed);
-}
-function stopScanner(){if(scanner){scanner.stop().then(()=>scanner.clear()).catch(()=>{});scanner=null;$('#scanStop').disabled=true;}}
-function absorb(txt){stopScanner();applyPacked(txt);}
+function showQR(packed){ $('#qrWrap').innerHTML=renderQR(packed); }
+function stopScanner(){ if(scanner){ scanner.stop().then(()=>scanner.clear()).catch(()=>{}); scanner=null; $('#scanStop').disabled=true; } }
+function absorb(txt){ stopScanner(); applyPacked(txt); }
 
 /* ====== Flow ====== */
 $('#qrMake').onclick=async()=>{
+  if(role!=='host'){ alert('Pick Host first'); return; }
   pc=newPC(); dc=pc.createDataChannel('x'); attachDC();
-  let got=false;
+  let sent=false;
   pc.onicecandidate=e=>{
-    if(got||!e.candidate)return;
-    if(/ typ host/.test(e.candidate.candidate)){
-      got=true;
-      const params=extractParams(pc.localDescription.sdp);
-      const payload={role:'host',t:'offer',...params};
-      const packed=pack(payload);showQR(packed);log('Host QR ready.');
+    if(sent||!e.candidate) return;
+    const c = e.candidate.candidate || '';
+    if(/ typ host/.test(c)){
+      try{
+        const params=extractParamsFrom(pc.localDescription, c);
+        const payload={role:'host',t:'offer',...params};
+        const packed=pack(payload); showQR(packed); log('Host QR ready.');
+        sent=true;
+      }catch(err){ log('ERR making host QR:', err.message||err); }
     }
   };
   await pc.setLocalDescription(await pc.createOffer());
@@ -173,14 +185,17 @@ async function onGotHost(obj){
   const offer=buildSDP('offer',obj.ip,obj.port,obj.ufrag,obj.pwd,obj.fingerprint);
   await pc.setRemoteDescription({type:'offer',sdp:offer});
   await pc.setLocalDescription(await pc.createAnswer());
-  let got=false;
+  let sent=false;
   pc.onicecandidate=e=>{
-    if(got||!e.candidate)return;
-    if(/ typ host/.test(e.candidate.candidate)){
-      got=true;
-      const params=extractParams(pc.localDescription.sdp);
-      const payload={role:'join',t:'answer',...params};
-      const packed=pack(payload);showQR(packed);log('Joiner QR ready.');
+    if(sent||!e.candidate) return;
+    const c = e.candidate.candidate || '';
+    if(/ typ host/.test(c)){
+      try{
+        const params=extractParamsFrom(pc.localDescription, c);
+        const payload={role:'join',t:'answer',...params};
+        const packed=pack(payload); showQR(packed); log('Joiner QR ready.');
+        sent=true;
+      }catch(err){ log('ERR making joiner QR:', err.message||err); }
     }
   };
 }
@@ -194,22 +209,24 @@ async function onGotJoin(obj){
 function applyPacked(packed){
   try{
     const obj=unpack(packed);
-    if(obj.t==='offer'&&obj.role==='host'&&role==='join'){onGotHost(obj);}
-    else if(obj.t==='answer'&&obj.role==='join'&&role==='host'){onGotJoin(obj);}
-    else{log('Role/step mismatch.');}
-  }catch(e){log('ERR',e);}
+    if(obj.t==='offer'&&obj.role==='host'&&role==='join'){ onGotHost(obj); }
+    else if(obj.t==='answer'&&obj.role==='join'&&role==='host'){ onGotJoin(obj); }
+    else { log('Role/step mismatch.'); }
+  }catch(e){ log('ERR applyPacked:', e.message||e); }
 }
 
 /* ====== Scanner controls ====== */
 $('#scanStart').onclick=()=>{
   scanner=new Html5Qrcode("reader");
-  scanner.start({facingMode:"environment"},{fps:10,qrbox:240},txt=>absorb(txt),_=>{}).then(()=>{$('#scanStop').disabled=false;});
+  scanner.start({facingMode:"environment"},{fps:10,qrbox:240},txt=>absorb(txt),_=>{})
+    .then(()=>{$('#scanStop').disabled=false;})
+    .catch(err=>log('scan start ERR',err));
 };
 $('#scanStop').onclick=()=>stopScanner();
-$('#qrApply').onclick=()=>{const t=$('#qrPaste').value.trim();if(t)absorb(t);};
+$('#qrApply').onclick=()=>{ const t=$('#qrPaste').value.trim(); if(t) absorb(t); };
 
 /* ====== Init ====== */
-window.addEventListener('load',()=>{log('Ready. Pick Host or Joiner.');});
+window.addEventListener('load',()=>{ log('Ready. Pick Host or Joiner.'); });
 </script>
 </body>
 </html>
