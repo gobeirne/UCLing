@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Rapid LAN Pair — QR (Host candidate only)</title>
+<title>Rapid Pair — LAN QR (v8)</title>
 <style>
   body{margin:0;padding:16px;font:15px/1.4 system-ui;background:#fafafa;color:#222}
   h1{margin:0 0 12px;font-size:18px}
@@ -12,23 +12,18 @@
   .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px}
   button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
   button:disabled{opacity:.55;cursor:not-allowed}
-  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
   textarea{width:100%;height:110px;font:12px monospace}
   .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
   .ok{background:#e8f5e9;color:#1b5e20} .warn{background:#fff8e1;color:#795548} .bad{background:#ffebee;color:#b71c1c}
   #log{font-size:.85rem;max-height:220px;overflow:auto;white-space:pre-wrap}
-  .qr-nav{display:flex;gap:8px;align-items:center}
   #qrWrap svg{max-width:100%}
-  .muted{color:#666;font-size:.9rem}
 </style>
-
-<!-- QR + DEFLATE + Scanner (CDNs) -->
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
-<h1>Rapid LAN Pair — QR (no Firebase) <span class="muted" id="ver">v0.7</span></h1>
+<h1>Rapid Pair — LAN QR <span class="status warn">v8</span></h1>
 
 <div class="row">
   <div class="card">
@@ -48,15 +43,15 @@
   <h2>QR Flow (same LAN)</h2>
   <div class="row">
     <div class="card">
-      <h3>Make & show my QR</h3>
+      <h3>My QR</h3>
       <button id="qrMake" disabled>Create my QR</button>
+      <button id="qrTrouble" style="display:none;">⚠ Trouble scanning?</button>
       <label style="display:block;margin-top:6px"><input type="checkbox" id="robustECC"> Robust (ECC=M)</label>
-      <div class="muted">Host shows first QR (offer+host candidate). Joiner scans, then shows reply QR (answer+host candidate). Host scans the reply.</div>
       <div id="qrWrap" style="margin-top:8px"></div>
     </div>
     <div class="card">
       <h3>Scan partner QR</h3>
-      <button id="scanStart" disabled>Start Camera Scan</button>
+      <button id="scanStart" disabled>Start Scan</button>
       <button id="scanStop" disabled>Stop</button>
       <div id="reader" style="width:320px;max-width:100%;"></div>
       <textarea id="qrPaste" placeholder="Or paste payload…"></textarea>
@@ -79,235 +74,124 @@ const $=s=>document.querySelector(s), logEl=$('#log');
 function log(...a){ const line=a.join(' '); console.log('[LOG]', line); logEl.textContent+=line+"\n"; logEl.scrollTop=logEl.scrollHeight; }
 function badge(el,t,c){ el.textContent=t; el.className='status '+c; }
 
-/* Tiny binary-safe base64url without spread */
 function b64urlFromU8(u8){
   let bin=''; for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
-  const b64 = btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  return b64;
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 function u8FromB64url(s){
-  const b64 = s.replace(/-/g,'+').replace(/_/g,'/').padEnd(s.length + (4 - s.length%4)%4, '=');
-  const bin = atob(b64); const u8=new Uint8Array(bin.length);
+  const b64=s.replace(/-/g,'+').replace(/_/g,'/').padEnd(s.length+(4-s.length%4)%4,'=');
+  const bin=atob(b64); const u8=new Uint8Array(bin.length);
   for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return u8;
 }
-function pack(obj){
-  const json = JSON.stringify(obj);
-  const def = pako.deflate(json);
-  return 'RP7|' + b64urlFromU8(def);
-}
-function unpack(s){
-  if(!s || typeof s!=='string') throw new Error('empty payload');
-  if(!s.startsWith('RP7|')) throw new Error('bad prefix');
-  const u8 = u8FromB64url(s.slice(4));
-  const txt = pako.inflate(u8, {to:'string'});
-  return JSON.parse(txt);
-}
+function pack(o){ return 'RP8|'+b64urlFromU8(pako.deflate(JSON.stringify(o))); }
+function unpack(s){ const u8=u8FromB64url(s.slice(4)); return JSON.parse(pako.inflate(u8,{to:'string'})); }
 
 /* ===== WebRTC ===== */
-let role=null, pc=null, dc=null, firstCandStr=null, firstCandSeen=false, scanner=null;
+let role=null, pc=null, dc=null, firstCand=null, packed='', splitMode=false;
 
 function newPC(){
-  const cfg = {iceServers:[], iceTransportPolicy:'all'}; // LAN only, super fast host candidates
-  const p = new RTCPeerConnection(cfg);
-
-  p.onicegatheringstatechange = ()=>log('gathering:', p.iceGatheringState);
-  p.oniceconnectionstatechange = ()=>{
-    const s=p.iceConnectionState; log('ice:', s);
-    badge($('#conn'), s, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
-  };
-  p.onsignalingstatechange = ()=>log('signal:', p.signalingState);
-  p.onconnectionstatechange = ()=>{
-    const s=p.connectionState; log('conn:', s);
-    const up=s==='connected';
-    ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
-  };
-  p.ondatachannel = e=>{ dc=e.channel; attachDC(); };
-
-  // Grab first *host* candidate ASAP
-  p.onicecandidate = e=>{
-    if(!e.candidate) return;
-    const cstr = e.candidate.candidate || '';
-    if(cstr.includes(' typ host ') && !firstCandSeen){
-      firstCandSeen = true; firstCandStr = cstr;
-      log('First host candidate:', cstr);
-      // If we were waiting to build a QR (host or joiner reply), do it now
-      maybeBuildQR();
+  const p=new RTCPeerConnection({iceServers:[]});
+  p.oniceconnectionstatechange=()=>{ const s=p.iceConnectionState; log('ice:',s); badge($('#conn'),s,s==='connected'?'ok':(s==='failed'?'bad':'warn')); };
+  p.onconnectionstatechange=()=>{ const s=p.connectionState; log('conn:',s); const up=s==='connected'; ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up); };
+  p.ondatachannel=e=>{dc=e.channel;attachDC();};
+  p.onicecandidate=e=>{
+    if(e.candidate && !firstCand && e.candidate.candidate.includes(' typ host ')){
+      firstCand=e.candidate.candidate;
+      log('Got first host candidate',firstCand);
+      buildPayload();
     }
   };
   return p;
 }
-
-function attachDC(){
-  if(!dc) return;
-  badge($('#dc'), dc.readyState, dc.readyState==='open'?'ok':'warn');
-  dc.onopen = ()=>badge($('#dc'),'open','ok');
-  dc.onclose= ()=>badge($('#dc'),'closed','bad');
-  dc.onmessage=e=>log('RX', e.data);
-}
-function send(m){ if(dc&&dc.readyState==='open'){ dc.send(m); log('TX', m);} else { log('DC not open'); } }
-$('#btnBeep').onclick=()=>send('BEEP');
-$('#btnChirp').onclick=()=>send('CHIRP');
-$('#btnPing').onclick =()=>send('PING');
+function attachDC(){ dc.onopen=()=>badge($('#dc'),'open','ok'); dc.onmessage=e=>log('RX',e.data); }
+function send(m){ if(dc&&dc.readyState==='open'){dc.send(m);log('TX',m);} }
 
 /* ===== Role UI ===== */
-function setRole(r){
-  role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
-  $('#qrMake').disabled=false;
-  $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
-  log('Role set to', r);
-}
-$('#roleHost').onclick = ()=>setRole('host');
-$('#roleJoin').onclick = ()=>setRole('join');
+$('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');enableUI();};
+$('#roleJoin').onclick=()=>{role='join';badge($('#roleBadge'),'Joiner','ok');enableUI();};
+function enableUI(){ $('#qrMake').disabled=false;$('#scanStart').disabled=false;$('#scanStop').disabled=false;$('#qrApply').disabled=false; }
 
-/* ===== QR rendering ===== */
-function renderQR(txt){
-  // ECC 'L' default; 'M' if robust checked
-  const ecc = $('#robustECC').checked ? 'M' : 'L';
-  // Keep QR small: set typeNumber=4 (33x33) upper bound; generator will bump if it truly must
-  const qr = qrcode(4, ecc);
-  qr.addData(txt);
-  qr.make();
-  const svg = qr.createSvgTag(6); // scale factor; just visual size, not version
-  $('#qrWrap').innerHTML = svg;
+/* ===== QR Rendering ===== */
+function renderDenseQR(txt){
+  const ecc=$('#robustECC').checked?'M':'L';
+  const q=qrcode(0,ecc); q.addData(txt); q.make();
+  $('#qrWrap').innerHTML=q.createSvgTag(6);
+  $('#qrTrouble').style.display='inline';
 }
+function renderSplitQR(txt){
+  const ecc=$('#robustECC').checked?'M':'L';
+  const max=640; const total=Math.ceil(txt.length/max); let html='<div style="display:flex;gap:8px">';
+  for(let i=0;i<total;i++){
+    const chunk=txt.slice(i*max,(i+1)*max);
+    const payload=`SPLIT|${i+1}/${total}|${chunk}`;
+    const q=qrcode(4,ecc); q.addData(payload); q.make();
+    html+=q.createSvgTag(6);
+  }
+  html+='</div>'; $('#qrWrap').innerHTML=html;
+}
+$('#qrTrouble').onclick=()=>{splitMode=true;renderSplitQR(packed);$('#qrTrouble').style.display='none';};
 
-/* Build QR when we have enough info */
-let pendingQRKind=null; // 'host-offer' or 'join-answer'
-function maybeBuildQR(){
-  if(!pendingQRKind) return;
-  if(pendingQRKind==='host-offer'){
-    if(!pc?.localDescription){ log('QR wait: no localDescription yet'); return; }
-    if(!firstCandSeen || !firstCandStr){ log('QR wait: first host candidate not seen yet'); return; }
-    const payload = pack({
-      r:'h',
-      s: pc.localDescription.sdp,  // OFFER SDP
-      c: firstCandStr              // HOST candidate as string
-    });
-    renderQR(payload);
-    log('Host QR ready (offer + host cand).');
-    pendingQRKind=null;
-  }
-  if(pendingQRKind==='join-answer'){
-    if(!pc?.localDescription){ log('QR wait: no localDescription yet'); return; }
-    if(!firstCandSeen || !firstCandStr){ log('QR wait: first host candidate not seen yet'); return; }
-    const payload = pack({
-      r:'j',
-      s: pc.localDescription.sdp,  // ANSWER SDP
-      c: firstCandStr              // JOINER host candidate
-    });
-    renderQR(payload);
-    log('Joiner reply QR ready (answer + host cand).');
-    pendingQRKind=null;
-    // We have our reply QR; stop camera to avoid rescans
-    stopScanner();
-  }
+function buildPayload(){
+  if(!role||!firstCand||!pc?.localDescription) return;
+  const ufrag=/a=ice-ufrag:(\S+)/.exec(pc.localDescription.sdp)?.[1]||'uf';
+  packed=pack({r:role[0],i:firstCand.split(' ')[4],p:firstCand.split(' ')[5],u:ufrag});
+  splitMode=false; renderDenseQR(packed);
+  log('QR ready. Payload length',packed.length);
 }
 
-/* ===== Create my QR (depends on role) ===== */
-$('#qrMake').onclick = async ()=>{
-  if(!role){ alert('Pick role'); return; }
-  // Fresh PC each time
-  try{ pc?.close(); }catch{}
-  pc = newPC(); dc=null; firstCandSeen=false; firstCandStr=null; $('#qrWrap').innerHTML='';
-  if(role==='host'){
-    // Host: make datachannel & offer
-    dc = pc.createDataChannel('x'); attachDC();
-    const offer = await pc.createOffer({offerToReceiveAudio:false,offerToReceiveVideo:false});
-    await pc.setLocalDescription(offer);
-    log('Host setLocalDescription(offer). Waiting for first host candidate…');
-    pendingQRKind='host-offer';
-    maybeBuildQR(); // builds once firstCand arrives
-  }else{
-    // Joiner: we can’t create an answer until we’ve scanned Host’s offer.
-    log('Joiner: scan Host QR first, then I will produce reply QR.');
-  }
+/* ===== Create QR ===== */
+$('#qrMake').onclick=async()=>{
+  try{pc?.close();}catch{}
+  pc=newPC();firstCand=null;packed='';
+  if(role==='host'){dc=pc.createDataChannel('x');attachDC();await pc.setLocalDescription(await pc.createOffer());}
+  else{log('Joiner: scan host QR first.');}
 };
 
-/* ===== Scanner + apply ===== */
-let html5=null;
-function stopScanner(){
-  if(html5){
-    html5.stop().then(()=>html5.clear()).catch(()=>{}).finally(()=>{
-      html5=null; scanner=null;
-      $('#scanStart').disabled=false; $('#scanStop').disabled=true;
-      log('Scanner stopped.');
-    });
-  }
-}
-$('#scanStart').onclick=()=>{
-  try{
-    html5 = new Html5Qrcode("reader");
-    html5.start(
-      {facingMode:"environment"},
-      {fps:10, qrbox:240},
-      txt => { absorb(txt); },
-      _err => {}
-    ).then(()=>{
-      $('#scanStart').disabled=true; $('#scanStop').disabled=false;
-      log('Scanner started.');
-    }).catch(err=>log('scan start ERR', err));
-  }catch(e){ log('scanner init ERR', e.message||e); }
-};
-$('#scanStop').onclick = stopScanner;
-$('#qrApply').onclick = ()=>{ const t=$('#qrPaste').value.trim(); if(t){ absorb(t); $('#qrPaste').value=''; } };
+/* ===== Scanner ===== */
+let html5=null,asm={};
+function stopScanner(){ if(html5){html5.stop().then(()=>html5.clear()).catch(()=>{});html5=null;log('Scanner stopped');} }
+$('#scanStart').onclick=()=>{html5=new Html5Qrcode("reader");html5.start({facingMode:"environment"},{fps:10,qrbox:240},txt=>absorb(txt),_=>{});};
+$('#scanStop').onclick=stopScanner;
+$('#qrApply').onclick=()=>{const t=$('#qrPaste').value.trim();if(t)absorb(t);};
 
-async function absorb(text){
-  try{
-    const obj = unpack(text); // {r:'h'|'j', s: SDP, c: candidateStr}
-    await applyPacked(obj);
-  }catch(e){
-    log('absorb ERR', (e&&e.message)||e);
-  }
+function absorb(txt){
+  if(txt.startsWith('SPLIT|')){
+    const m=/SPLIT\|(\d+)\/(\d+)\|(.*)/.exec(txt);if(!m)return;
+    const idx=+m[1],total=+m[2],data=m[3];
+    if(!asm.total){asm.total=total;asm.parts=Array(total).fill('');}
+    asm.parts[idx-1]=data;
+    if(asm.parts.filter(x=>x).length===asm.total){const joined=asm.parts.join('');asm={};applyPacked(joined);}
+  } else applyPacked(txt);
 }
 
-function parseMidFromLocalDesc(desc){
-  // Our single m=application is mid:0 in current browser SDPs
-  // To be safe, find first "a=mid:" line.
-  const m = /a=mid:(\S+)/.exec(desc.sdp || desc);
-  return m ? m[1] : '0';
+async function applyPacked(txt){
+  try{const obj=unpack(txt);
+    if(role==='join'&&obj.r==='h'){await pc.setRemoteDescription({type:'offer',sdp:dummySDP(obj)});await pc.setLocalDescription(await pc.createAnswer());log('Joiner applied offer, made answer');buildPayload();}
+    else if(role==='host'&&obj.r==='j'){await pc.setRemoteDescription({type:'answer',sdp:dummySDP(obj)});log('Host applied answer');}
+  }catch(e){log('ERR',e.message||e);}
 }
 
-async function applyPacked(obj){
-  if(!pc) pc = newPC();
-  if(!obj || !obj.r || !obj.s){ log('apply: invalid payload'); return; }
+/* ===== Dummy SDP builder from minimal info ===== */
+function dummySDP(o){return `v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+c=IN IP4 0.0.0.0
+a=ice-ufrag:${o.u}
+a=ice-pwd:dummy123456
+a=setup:${o.r==='h'?'actpass':'active'}
+a=mid:0
+a=sctp-port:5000
+a=max-message-size:262144
+a=candidate:0 1 udp 2122260223 ${o.i} ${o.p} typ host
+a=end-of-candidates`;}
 
-  if(role==='join' && obj.r==='h'){
-    // JOINER == scanning HOST
-    if(pc.signalingState!=='stable'){ log('join: bad state', pc.signalingState); return; }
-    await pc.setRemoteDescription({type:'offer', sdp:obj.s});
-    log('Joiner setRemoteDescription(offer).');
-    // Add Host candidate promptly
-    try{
-      const mid = parseMidFromLocalDesc(obj.s);
-      await pc.addIceCandidate(new RTCIceCandidate({candidate:obj.c, sdpMid:mid, sdpMLineIndex:0}));
-      log('Joiner addIceCandidate(host).');
-    }catch(e){ log('Joiner addIceCandidate ERR', e.message||e); }
-
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    log('Joiner setLocalDescription(answer). Waiting for my first host candidate to build reply QR…');
-    pendingQRKind='join-answer';
-    maybeBuildQR();
-
-  } else if(role==='host' && obj.r==='j'){
-    // HOST == scanning JOINER reply
-    if(pc.signalingState!=='have-local-offer' && pc.signalingState!=='stable'){
-      log('host: unexpected state before answer', pc.signalingState);
-    }
-    await pc.setRemoteDescription({type:'answer', sdp:obj.s});
-    log('Host setRemoteDescription(answer).');
-    try{
-      const mid = parseMidFromLocalDesc(obj.s);
-      await pc.addIceCandidate(new RTCIceCandidate({candidate:obj.c, sdpMid:mid, sdpMLineIndex:0}));
-      log('Host addIceCandidate(joiner).');
-    }catch(e){ log('Host addIceCandidate ERR', e.message||e); }
-    // We’re done; stop camera if running
-    stopScanner();
-
-  } else {
-    alert('Role mismatch. One side must be Host, the other Joiner.');
-  }
-}
+/* ===== Actions ===== */
+$('#btnBeep').onclick=()=>send('BEEP');
+$('#btnChirp').onclick=()=>send('CHIRP');
+$('#btnPing').onclick=()=>send('PING');
 </script>
 </body>
 </html>
