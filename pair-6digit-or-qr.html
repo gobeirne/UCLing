@@ -235,23 +235,33 @@ async function startCloud(code){
   $('#code').value=id;
 
   const roomRef = doc(db,'rooms',id);
-  const callerC = collection(roomRef,'callerCandidates');
-  const calleeC = collection(roomRef,'calleeCandidates');
   const expiresAt = Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
 
   pc = newPC();
-
   if(role==='host'){
     dc = pc.createDataChannel('x'); attachDC();
+  }
 
-    // Trickle my candidates
-    pc.onicecandidate = async e => {
-      if(e.candidate){ try{ await addDoc(callerC, e.candidate.toJSON()); }catch(err){ log('cand add ERR', err.message||err); } }
-      else log('caller: end of candidates (trickle)');
-    };
+  // Create local description
+  const desc = (role==='host')
+    ? await pc.createOffer()
+    : await pc.createAnswer();
+  await pc.setLocalDescription(desc);
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+  // Wait until ICE completes
+  await new Promise(res=>{
+    if(pc.iceGatheringState==='complete') return res();
+    pc.addEventListener('icegatheringstatechange',()=>{
+      if(pc.iceGatheringState==='complete') res();
+    });
+    // Safety timeout: 3s
+    setTimeout(res,3000);
+  });
+
+  log('Cloud: ICE complete, SDP length', pc.localDescription.sdp.length);
+
+  if(role==='host'){
+    // Write offer with full candidates
     await setDoc(roomRef, { offer: toJSON(pc.localDescription), expiresAt }, { merge:true });
 
     // Watch for Answer
@@ -259,38 +269,30 @@ async function startCloud(code){
       const d=snap.data()||{};
       if(d.answer && !pc.currentRemoteDescription){
         await pc.setRemoteDescription(d.answer);
-        log('Cloud: got answer');
+        log('Cloud: got answer with candidates');
       }
     });
-
-    // Watch callee candidates
-    onSnapshot(calleeC, snap=>{
-      snap.docChanges().forEach(ch=>{ if(ch.type==='added') pc.addIceCandidate(ch.doc.data()); });
-    });
-
   }else{
-    // Trickle my candidates
-    pc.onicecandidate = async e => {
-      if(e.candidate){ try{ await addDoc(calleeC, e.candidate.toJSON()); }catch(err){ log('cand add ERR', err.message||err); } }
-      else log('callee: end of candidates (trickle)');
-    };
-
     // Watch for Offer
     onSnapshot(roomRef, async snap=>{
       const d=snap.data()||{};
       if(d.offer && !pc.currentRemoteDescription){
         await pc.setRemoteDescription(d.offer);
         await pc.setLocalDescription(await pc.createAnswer());
-        await setDoc(roomRef, { answer: toJSON(pc.localDescription), expiresAt }, { merge:true });
-
-        // Watch caller candidates
-        onSnapshot(callerC, snap=>{
-          snap.docChanges().forEach(ch=>{ if(ch.type==='added') pc.addIceCandidate(ch.doc.data()); });
+        await new Promise(res=>{
+          if(pc.iceGatheringState==='complete') return res();
+          pc.addEventListener('icegatheringstatechange',()=>{
+            if(pc.iceGatheringState==='complete') res();
+          });
+          setTimeout(res,3000);
         });
+        log('Cloud: answering with candidates');
+        await setDoc(roomRef, { answer: toJSON(pc.localDescription), expiresAt }, { merge:true });
       }
     });
   }
 }
+
 
 async function clearRoom(id){
   const roomRef = doc(db,'rooms', id);
