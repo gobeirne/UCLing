@@ -1,386 +1,437 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Pair via 6-Digit or QR</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    :root { --gap: 10px; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
-    header { padding: 12px 16px; border-bottom: 1px solid #eee; display:flex; justify-content:space-between; align-items:center; }
-    main { padding: 16px; display:grid; gap: var(--gap); grid-template-columns: 1fr; max-width: 900px; margin: 0 auto; }
-    .row { display:flex; flex-wrap:wrap; gap: var(--gap); align-items: center; }
-    .col { display:flex; flex-direction:column; gap: 6px; }
-    input[type="text"] { font-size: 16px; padding: 8px 10px; width: 160px; }
-    button { padding: 8px 12px; font-size: 14px; border: 1px solid #ddd; border-radius: 8px; background:#fff; cursor:pointer; }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    .muted { color:#666; }
-    #qr, #qrChunks { display:flex; gap: 16px; flex-wrap: wrap; }
-    canvas { background:#fff; padding:8px; border:1px solid #eee; border-radius: 8px; }
-    #reader { width: 320px; max-width: 100%; }
-    details { border:1px solid #eee; border-radius:8px; padding:8px 12px; }
-    summary { cursor:pointer; }
-    #log { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:#0b1220; color:#e6edf3; padding:10px; border-radius:8px; max-height:200px; overflow:auto; white-space:pre-wrap; }
-    .tag { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border:1px solid #eee; border-radius:999px; }
-    .green { color:#0a7f3f; }
-    .red { color:#b32222; }
-    .chip { background:#f6f7f9; border:1px solid #e5e7eb; border-radius:999px; padding:2px 8px; font-size:12px; }
-  </style>
-  <script src="https://unpkg.com/html5-qrcode/minified/html5-qrcode.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Pairing Demo — Cloud (Trickle) + QR (Offline)</title>
+<style>
+  body{margin:0;padding:16px;font:15px/1.4 system-ui;background:#f7f7f8;color:#222}
+  h1{margin:0 0 12px;font-size:18px}
+  .row{display:grid;gap:12px;grid-template-columns:1fr}
+  @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px;margin:10px 0}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
+  textarea{width:100%;height:110px;font:12px monospace}
+  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
+  .ok{background:#e8f5e9;color:#1b5e20} .warn{background:#fff8e1;color:#795548} .bad{background:#ffebee;color:#b71c1c}
+  #log{font-size:.85rem;max-height:220px;overflow:auto;white-space:pre-wrap}
+  #qrWrap{max-width:460px}
+  .qr-nav{display:flex;gap:8px;align-items:center}
+  .muted{color:#666;font-size:.9rem}
+  label.inline{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
+  #ver{color:#666;font-size:.8rem}
+  .small{font-size:.85rem}
+</style>
+<!-- local/offline libs placed alongside this file -->
+<script src="qrcode.js"></script>
+<script src="pako.min.js"></script>
+<script src="html5-qrcode.min.js"></script>
 </head>
 <body>
-  <header>
-    <strong>Pair Devices</strong>
-    <span class="muted">P2P first • TURN only if needed</span>
-  </header>
+<h1>Pairing Demo — Cloud (Trickle) + QR (Offline) <span id="ver">v1.9</span></h1>
 
-  <main>
-    <div class="row">
-      <label class="tag"><input type="radio" name="role" id="hostBtn"> Host</label>
-      <label class="tag"><input type="radio" name="role" id="joinBtn"> Joiner</label>
-      <span id="roleHint" class="muted"></span>
-    </div>
+<div class="row">
+  <div class="card">
+    <h2>Role</h2>
+    <button id="roleHost">Host</button>
+    <button id="roleJoin">Joiner</button>
+    <span id="roleBadge" class="status warn">no role</span>
+  </div>
+  <div class="card">
+    <h2>Status</h2>
+    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
+    <div id="log"></div>
+  </div>
+</div>
 
-    <div class="row">
-      <div class="col">
-        <label for="roomCode">6-digit code</label>
-        <input id="roomCode" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000">
+<div class="card">
+  <h2>Cloud (6-digit code)</h2>
+  <label>Code: <input id="code" inputmode="numeric" maxlength="6" style="width:9ch"/></label>
+  <button id="randStart" style="display:none;">🎲 Random Code & Start</button>
+  <button id="startCloud" style="display:none;">Start</button>
+  <button id="resetRoom" style="display:none;">Reset Room</button>
+  <div class="muted small">Uses trickle ICE via Firestore. Rooms auto-expire after 7 days.</div>
+</div>
+
+<div class="card">
+  <h2>Connectivity Options</h2>
+  <div class="small muted" style="margin-bottom:6px">Runtime ICE config (for both Cloud & QR). Leave TURN blank to use STUN-only. “Force TURN” sets <code>iceTransportPolicy:"relay"</code>.</div>
+  <div style="display:flex;flex-wrap:wrap;gap:12px">
+    <label class="inline"><input type="checkbox" id="forceTurn"> Force TURN (relay-only)</label>
+    <label>TURN URLs (comma): <input id="turnUrls" placeholder="turn:host:3478, turns:host:5349" style="min-width:22ch"></label>
+    <label>Username: <input id="turnUser" placeholder="optional" style="min-width:12ch"></label>
+    <label>Credential: <input id="turnCred" placeholder="optional" style="min-width:12ch"></label>
+  </div>
+  <div class="small muted" style="margin-top:6px">Default STUN is <code>stun:stun.l.google.com:19302</code>.</div>
+</div>
+
+<div class="card">
+  <h2>QR (offline, same LAN)</h2>
+  <div class="row">
+    <div class="card">
+      <h3>Make & show my QR (Host or Joiner)</h3>
+      <button id="qrMake" disabled>Create my QR</button>
+      <button id="qrTrouble" style="display:none;">⚠ Trouble scanning? (4 fat codes)</button>
+      <label style="display:block;margin-top:6px"><input type="checkbox" id="robustECC"> Robust (ECC=M)</label>
+      <div id="qrWrap" style="margin-top:8px"></div>
+      <div id="qrNav" class="qr-nav" style="display:none;">
+        <button id="qrPrev">◀ Prev</button>
+        <span id="qrIndex"></span>
+        <button id="qrNext">Next ▶</button>
       </div>
-      <div class="row">
-        <button id="randomBtn">Random Code & Start</button>
-        <button id="startBtn">Start</button>
-        <button id="resetBtn">Reset</button>
-      </div>
-      <div class="chip">Project: <span id="proj" style="margin-left:6px">ucpairing</span></div>
     </div>
-
-    <div class="row">
-      <button id="makeQRBtn" disabled>Make & show my QR</button>
-      <button id="scanQRBtn" disabled>Scan partner QR</button>
+    <div class="card">
+      <h3>Scan partner QR (the other side)</h3>
+      <button id="scanStart" disabled>Start Camera Scan</button>
+      <button id="scanStop" disabled>Stop</button>
+      <div id="reader" style="width:320px;max-width:100%;"></div>
+      <textarea id="qrPaste" placeholder="Paste scanned text…"></textarea>
+      <button id="qrApply" disabled>Apply</button>
+      <div id="qrProgress" class="muted" style="margin-top:6px"></div>
     </div>
+  </div>
+</div>
 
-    <div id="qr"></div>
+<div class="card">
+  <h2>Actions</h2>
+  <button id="btnBeep" disabled>Beep</button>
+  <button id="btnChirp" disabled>Chirp</button>
+  <button id="btnPing" disabled>Ping</button>
+</div>
 
-    <details id="qrAlt" style="display:none;">
-      <summary>Trouble scanning?</summary>
-      <div class="muted" style="margin:8px 0">Scan these big, simple chunks in order. The Joiner will show “Got 1, 2, 4” while scanning.</div>
-      <div id="qrChunks"></div>
-      <div id="chunkStatus" class="muted"></div>
-    </details>
+<script type="module">
+/* ========== Helpers ========== */
+const $=s=>document.querySelector(s), logEl=$('#log');
+function log(...a){logEl.textContent+=a.join(' ')+"\n";logEl.scrollTop=logEl.scrollHeight;}
+function badge(el,t,c){el.textContent=t;el.className='status '+c;}
+function sixDigits(x){return (''+x).replace(/\D/g,'').slice(0,6).padStart(6,'0');}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
-    <div id="reader"></div>
+/* Safe base64url helpers */
+function b64url(u8){
+  let bin=''; for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
+  const b64=btoa(bin); let out='';
+  for(let i=0;i<b64.length;i++){const ch=b64[i];
+    if(ch==='+') out+='-'; else if(ch==='/') out+='_'; else if(ch==='='){} else out+=ch;
+  } return out;
+}
+function unb64url(s){
+  let b64=''; for(let i=0;i<s.length;i++){const ch=s[i];
+    if(ch==='-') b64+='+'; else if(ch==='_') b64+='/'; else b64+=ch;
+  } while(b64.length%4) b64+='=';
+  const bin=atob(b64); const u8=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return u8;
+}
+function pack(o){ return b64url(pako.deflate(JSON.stringify(o))); }
+function unpack(s){ return JSON.parse(pako.inflate(unb64url(s), {to:'string'})); }
 
-    <section>
-      <h3 style="margin:8px 0;">Debug</h3>
-      <div id="log"></div>
-      <div class="muted" style="margin-top:6px;">Tip: if both devices are on the same Uni Wi-Fi, you should see direct P2P without TURN.</div>
-    </section>
-  </main>
+/* ========== Role UI ========== */
+let role=null;
+function setRole(r){
+  role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
+  if(r==='host'){
+    $('#randStart').style.display='inline';
+    $('#startCloud').style.display='none';
+    $('#resetRoom').style.display='none';
+    $('#qrMake').disabled=false;
+    $('#scanStart').disabled=true; $('#scanStop').disabled=true; $('#qrApply').disabled=true;
+  }else{
+    $('#randStart').style.display='none';
+    $('#startCloud').style.display='inline';
+    $('#resetRoom').style.display='inline';
+    $('#qrMake').disabled=false; // Joiner can generate their QR reply too
+    $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+  }
+}
+$('#roleHost').onclick=()=>setRole('host');
+$('#roleJoin').onclick=()=>setRole('join');
+$('#code').onfocus=()=>{ if(role==='host'){ $('#randStart').style.display='none'; $('#startCloud').style.display='inline'; $('#resetRoom').style.display='inline'; } };
 
-  <script type="module">
-    // ---------- Utils ----------
-    const $ = (sel) => document.querySelector(sel);
-    const logEl = $("#log");
-    function log(...args) {
-      const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
-      logEl.textContent += line + "\\n";
-      logEl.scrollTop = logEl.scrollHeight;
-      console.log(...args);
+/* ========== WebRTC ========== */
+let pc,dc;
+const candStats = {host:0,srflx:0,relay:0,prflx:0};
+function resetCandStats(){ candStats.host=0; candStats.srflx=0; candStats.relay=0; candStats.prflx=0; }
+
+function currentIceServers(){
+  const urlsStr = $('#turnUrls').value.trim();
+  const user = $('#turnUser').value.trim();
+  const cred = $('#turnCred').value.trim();
+  const arr = [];
+  // Always include Google STUN unless forcing relay and no TURN provided
+  if(!$('#forceTurn').checked) arr.push({urls:'stun:stun.l.google.com:19302'});
+  if(urlsStr){
+    const urls = urlsStr.split(',').map(s=>s.trim()).filter(Boolean);
+    if(urls.length){
+      const base = {urls};
+      if(user) base.username = user;
+      if(cred) base.credential = cred;
+      arr.push(base);
     }
-    function b64uFromStr(s) {
-      return btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+  return arr;
+}
+
+function newPC(){
+  const cfg = {
+    iceServers: currentIceServers(),
+    iceTransportPolicy: $('#forceTurn').checked ? 'relay' : 'all'
+  };
+  const p = new RTCPeerConnection(cfg);
+
+  // verbose state logging
+  p.onicegatheringstatechange = ()=>log('gathering:', p.iceGatheringState);
+  p.oniceconnectionstatechange = ()=>log('ice:', p.iceConnectionState);
+  p.onsignalingstatechange = ()=>log('signal:', p.signalingState);
+  p.onconnectionstatechange = ()=>{
+    const s=p.connectionState; badge($('#conn'),s, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
+    const up=s==='connected'; ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
+  };
+  p.ondatachannel = e=>{ dc=e.channel; attachDC(); };
+
+  // Candidate diagnostics
+  resetCandStats();
+  p.onicecandidate = e=>{
+    if(e.candidate){
+      const t=e.candidate.type; candStats[t]=(candStats[t]||0)+1;
+      log('cand:', t, e.candidate.protocol, e.candidate.address+':'+e.candidate.port);
+    } else {
+      log('cand: null (end of candidates)');
     }
-    function strFromB64u(b) {
-      return decodeURIComponent(escape(atob(b.replace(/-/g,'+').replace(/_/g,'/'))));
-    }
+  };
 
-    // Chunk helpers (for the 6-digit code we usually don’t need this, but we expose it to keep scans big & easy)
-    function splitToChunks(str, n) {
-      const size = Math.ceil(str.length / n);
-      const out = [];
-      for (let i=0;i<n;i++) out.push(str.slice(i*size, (i+1)*size));
-      return out;
-    }
+  return p;
+}
+function attachDC(){
+  badge($('#dc'),dc.readyState, dc.readyState==='open'?'ok':'warn');
+  dc.onopen = ()=>badge($('#dc'),'open','ok');
+  dc.onclose= ()=>badge($('#dc'),'closed','bad');
+  dc.onmessage=e=>log('RX', e.data);
+}
+function send(m){ if(dc&&dc.readyState==='open') dc.send(m); else log('TX blocked, DC not open'); }
+$('#btnBeep').onclick=()=>send('BEEP');
+$('#btnChirp').onclick=()=>send('CHIRP');
+$('#btnPing').onclick =()=>send('PING');
 
-    // ---------- Firebase ----------
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
-    import {
-      getFirestore, doc, setDoc, getDoc, onSnapshot, deleteDoc, serverTimestamp, Timestamp, updateDoc
-    } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+/* ========== Firebase (trickle ICE signaling) ========== */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
+import {
+  initializeFirestore, doc, setDoc, updateDoc, onSnapshot, Timestamp, deleteField,
+  collection, addDoc, getDocs, deleteDoc
+} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 
-    const firebaseConfig = { projectId: "ucpairing" };
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-    log("Firebase ready. projectId=", firebaseConfig.projectId);
+const appFB = initializeApp({
+  apiKey:"AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
+  authDomain:"ucpairing.firebaseapp.com",
+  projectId:"ucpairing"
+});
+const db  = initializeFirestore(appFB,{experimentalAutoDetectLongPolling:true});
+const toJSON = d => d ? {type:d.type, sdp:d.sdp} : null;
 
-    // ---------- ICE / WebRTC ----------
-    const iceServers = [
-      { urls: "stun:stun.l.google.com:19302" },
-      {
-        urls: [
-          "turn:openrelay.metered.ca:80",
-          "turn:openrelay.metered.ca:443",
-          "turns:openrelay.metered.ca:443"
-        ],
-        username: "openrelayproject",
-        credential: "openrelayproject"
+async function startCloud(code){
+  if(!role){ alert('Pick role'); return; }
+  const id = sixDigits(code||Math.floor(Math.random()*1e6));
+  $('#code').value=id;
+
+  const roomRef = doc(db,'rooms',id);
+  const callerC = collection(roomRef,'callerCandidates');
+  const calleeC = collection(roomRef,'calleeCandidates');
+  const expiresAt = Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
+
+  pc = newPC();
+
+  if(role==='host'){
+    dc = pc.createDataChannel('x'); attachDC();
+
+    // Trickle my candidates
+    pc.onicecandidate = async e => {
+      if(e.candidate){ try{ await addDoc(callerC, e.candidate.toJSON()); }catch(err){ log('cand add ERR', err.message||err); } }
+      else log('caller: end of candidates (trickle)');
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await setDoc(roomRef, { offer: toJSON(pc.localDescription), expiresAt }, { merge:true });
+
+    // Watch for Answer
+    onSnapshot(roomRef, async snap=>{
+      const d=snap.data()||{};
+      if(d.answer && !pc.currentRemoteDescription){
+        await pc.setRemoteDescription(d.answer);
+        log('Cloud: got answer');
       }
-    ];
-    function newPC() {
-      const pc = new RTCPeerConnection({
-        iceServers,
-        iceTransportPolicy: "all" // P2P first, TURN only if needed
-      });
-      pc.onicegatheringstatechange = () => log("gathering:", pc.iceGatheringState);
-      pc.oniceconnectionstatechange = () => log("ice:", pc.iceConnectionState);
-      pc.onsignalingstatechange = () => log("signal:", pc.signalingState);
-      return pc;
-    }
-
-    // ---------- Elements & State ----------
-    const hostBtn = $("#hostBtn");
-    const joinBtn = $("#joinBtn");
-    const roleHint = $("#roleHint");
-    const codeBox = $("#roomCode");
-    const randomBtn = $("#randomBtn");
-    const startBtn = $("#startBtn");
-    const resetBtn = $("#resetBtn");
-    const makeQRBtn = $("#makeQRBtn");
-    const scanQRBtn = $("#scanQRBtn");
-    const qrDiv = $("#qr");
-    const qrAlt = $("#qrAlt");
-    const qrChunksDiv = $("#qrChunks");
-    const chunkStatus = $("#chunkStatus");
-    const readerDiv = $("#reader");
-
-    let role = null;
-    let pc = null;
-    let roomDoc = null;
-    let stopQRScan = null;
-
-    // ---------- UI logic ----------
-    function setRole(newRole) {
-      role = newRole;
-      if (role === "host") {
-        makeQRBtn.disabled = false;
-        scanQRBtn.disabled = true;
-        roleHint.textContent = "Host: show your code/QR; Joiner scans or types the code.";
-      } else if (role === "joiner") {
-        makeQRBtn.disabled = true;
-        scanQRBtn.disabled = false;
-        roleHint.textContent = "Joiner: scan Host’s QR or type the 6-digit code.";
-      } else {
-        roleHint.textContent = "";
-      }
-    }
-
-    hostBtn.onclick = () => setRole("host");
-    joinBtn.onclick = () => setRole("joiner");
-
-    codeBox.addEventListener("input", () => {
-      // If the user edits the box, keep Random separate and allow manual Start
-      randomBtn.textContent = "Random Code & Start";
     });
 
-    randomBtn.onclick = async () => {
-      const code = String(Math.floor(100000 + Math.random() * 900000));
-      codeBox.value = code;
-      randomBtn.textContent = "Random picked ✓";
-      await startCloud(code);
+    // Watch callee candidates
+    onSnapshot(calleeC, snap=>{
+      snap.docChanges().forEach(ch=>{ if(ch.type==='added') pc.addIceCandidate(ch.doc.data()); });
+    });
+
+  }else{
+    // Trickle my candidates
+    pc.onicecandidate = async e => {
+      if(e.candidate){ try{ await addDoc(calleeC, e.candidate.toJSON()); }catch(err){ log('cand add ERR', err.message||err); } }
+      else log('callee: end of candidates (trickle)');
     };
 
-    startBtn.onclick = async () => {
-      const code = codeBox.value.trim();
-      if (!/^[0-9]{6}$/.test(code)) return alert("Enter a valid 6-digit code.");
-      await startCloud(code);
-    };
+    // Watch for Offer
+    onSnapshot(roomRef, async snap=>{
+      const d=snap.data()||{};
+      if(d.offer && !pc.currentRemoteDescription){
+        await pc.setRemoteDescription(d.offer);
+        await pc.setLocalDescription(await pc.createAnswer());
+        await setDoc(roomRef, { answer: toJSON(pc.localDescription), expiresAt }, { merge:true });
 
-    resetBtn.onclick = async () => {
-      try {
-        if (roomDoc) await deleteDoc(roomDoc);
-      } catch (e) {
-        // ignore delete failures; it might not exist or rules may block
-      }
-      if (pc) pc.close();
-      window.location.reload();
-    };
-
-    // QR: single fat code
-    makeQRBtn.onclick = () => {
-      if (!codeBox.value.trim()) return alert("Pick a 6-digit code first.");
-      qrDiv.innerHTML = "";
-      qrAlt.style.display = "none";
-
-      // Big & simple QR for the 6-digit code
-      QRCode.toCanvas(codeBox.value.trim(), { width: 280, errorCorrectionLevel: "L" }, (err, canvas) => {
-        if (!err) qrDiv.appendChild(canvas);
-      });
-
-      // Also prepare the 4-chunk option (same content, just split with labels for even larger modules)
-      const payload = codeBox.value.trim();               // keep it short & robust
-      const chunks = splitToChunks(payload, 4);
-      qrChunksDiv.innerHTML = "";
-      chunks.forEach((chunk, i) => {
-        const wrap = document.createElement("div");
-        const label = document.createElement("div");
-        label.className = "muted";
-        label.textContent = `#${i+1}`;
-        wrap.appendChild(label);
-        const ctn = document.createElement("div");
-        QRCode.toCanvas(`${i+1}:${chunks.length}:${chunk}`, { width: 260, errorCorrectionLevel: "L" }, (err, canvas) => {
-          if (!err) ctn.appendChild(canvas);
+        // Watch caller candidates
+        onSnapshot(callerC, snap=>{
+          snap.docChanges().forEach(ch=>{ if(ch.type==='added') pc.addIceCandidate(ch.doc.data()); });
         });
-        wrap.appendChild(ctn);
-        qrChunksDiv.appendChild(wrap);
-      });
-      chunkStatus.textContent = "Waiting for scans…";
-      qrAlt.style.display = "";
+      }
+    });
+  }
+}
+
+async function clearRoom(id){
+  const roomRef = doc(db,'rooms', id);
+  const c1 = await getDocs(collection(roomRef,'callerCandidates'));
+  const c2 = await getDocs(collection(roomRef,'calleeCandidates'));
+  await Promise.all([
+    ...c1.docs.map(d=>deleteDoc(d.ref)),
+    ...c2.docs.map(d=>deleteDoc(d.ref)),
+    updateDoc(roomRef,{offer:deleteField(),answer:deleteField()}).catch(()=>{})
+  ]);
+  log('Room cleared');
+}
+
+$('#randStart').onclick=()=>{
+  if(role!=='host'){ alert('Only Host can random-start'); return; }
+  const c = String(Math.floor(Math.random()*1e6)).padStart(6,'0');
+  $('#code').value=c; startCloud(c);
+};
+$('#startCloud').onclick = ()=> startCloud($('#code').value || Math.floor(Math.random()*1e6));
+$('#resetRoom').onclick  = async ()=>{
+  const id = sixDigits($('#code').value||''); if(!id) return;
+  try{ pc?.close(); }catch{}
+  await clearRoom(id);
+};
+
+/* ========== QR (offline, LAN) ========== */
+const QR_PREFIX='UCP1|';
+const CHUNK_COUNT=4;
+const SCALE_SINGLE=3, SCALE_CHUNK=6;
+
+function split4(s){ const sz=Math.ceil(s.length/CHUNK_COUNT); return Array.from({length:CHUNK_COUNT},(_,i)=>s.slice(i*sz,(i+1)*sz)); }
+function renderQR(txt,scale,ecc){ const q=qrcode(0,ecc); q.addData(txt); q.make(); return q.createSvgTag(scale); }
+
+let qrPacked='', qrChunks=[], qrMode='single', qrIdx=0;
+
+function showQR(){
+  const ecc = $('#robustECC').checked ? 'M' : 'L';
+  if(qrMode==='single'){
+    $('#qrWrap').innerHTML = renderQR(qrPacked, SCALE_SINGLE, ecc);
+    $('#qrNav').style.display='none';
+  }else{
+    const payload = `${QR_PREFIX}${qrChunks.length}|${qrIdx+1}|${qrChunks[qrIdx]}`;
+    $('#qrWrap').innerHTML = renderQR(payload, SCALE_CHUNK, ecc);
+    $('#qrIndex').textContent = `${qrIdx+1}/${qrChunks.length}`;
+    $('#qrNav').style.display='flex';
+  }
+}
+$('#qrPrev').onclick=()=>{ qrIdx=(qrIdx-1+qrChunks.length)%qrChunks.length; showQR(); };
+$('#qrNext').onclick=()=>{ qrIdx=(qrIdx+1)%qrChunks.length; showQR(); };
+
+async function waitIceCompleteOrTimeout(pc, ms){
+  if(pc.iceGatheringState==='complete') return;
+  await new Promise(res=>{
+    let done=false;
+    const onChange=()=>{
+      if(pc.iceGatheringState==='complete' && !done){ done=true; pc.removeEventListener('icegatheringstatechange', onChange); res(); }
     };
+    pc.addEventListener('icegatheringstatechange', onChange);
+    setTimeout(()=>{ if(!done){ pc.removeEventListener('icegatheringstatechange', onChange); res(); } }, ms);
+  });
+}
 
-    // QR scan (single or chunked)
-    scanQRBtn.onclick = () => startScanner();
+$('#qrMake').onclick=async()=>{
+  if(!role){ alert('Pick role first'); return; }
 
-    async function startScanner() {
-      readerDiv.innerHTML = "";
-      const scanner = new Html5Qrcode("reader");
-      const got = new Set();  // which chunk numbers we’ve seen
-      let reconstructed = "";
+  pc = newPC();
+  if(role==='host'){ dc=pc.createDataChannel('x'); attachDC(); }
 
-      const onDecoded = async (text) => {
-        // Accept either single code OR chunk “i:n:chunk”
-        const m = text.match(/^(\d+):(\d+):(.*)$/);
-        if (m) {
-          const i = parseInt(m[1], 10);
-          const n = parseInt(m[2], 10);
-          got.add(i);
-          chunkStatus.textContent = "Got " + [...got].sort((a,b)=>a-b).join(", ");
-          // We can be ultra-simple: store pieces by index
-          if (!window._chunks) window._chunks = {};
-          window._chunks[i] = m[3];
-          if (got.size === n) {
-            reconstructed = "";
-            for (let k=1;k<=n;k++) reconstructed += window._chunks[k] || "";
-            await finalizeScan(reconstructed);
-            await scanner.stop();
-          }
-        } else {
-          // single code path
-          await finalizeScan(text.trim());
-          await scanner.stop();
-        }
-      };
+  const desc = (role==='host') ? await pc.createOffer() : await pc.createAnswer();
+  await pc.setLocalDescription(desc);
 
-      try {
-        await scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 280 }, onDecoded);
-        stopQRScan = () => scanner.stop();
-      } catch (e) {
-        log("QR start error:", e.message || e);
-        alert("Couldn’t start camera for scanning.");
-      }
+  // Robust QR: proceed after ICE 'complete' OR after timeout (2s)
+  log('QR: waiting for ICE complete or timeout…');
+  await waitIceCompleteOrTimeout(pc, 2000);
+
+  log('QR: local SDP len', pc.localDescription?.sdp?.length || 0, 'cands', JSON.stringify(candStats));
+  qrPacked = pack({ role, sdp:{type:pc.localDescription.type, sdp:pc.localDescription.sdp} });
+  qrMode='single'; $('#qrTrouble').style.display='inline'; showQR();
+
+  // After generating initial QR, enable scanning (host often needs to scan joiner reply)
+  $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+};
+
+$('#qrTrouble').onclick=()=>{ qrChunks=split4(qrPacked); qrIdx=0; qrMode='multi'; showQR(); };
+
+/* Scanner + assembly */
+let asm={total:0, got:new Set(), parts:[]};
+function resetAsm(){ asm={total:0,got:new Set(),parts:[]}; $('#qrProgress').textContent=''; }
+function absorb(text){
+  if(text.startsWith(QR_PREFIX)){
+    const rest=text.slice(QR_PREFIX.length);
+    const p1=rest.indexOf('|'), p2=rest.indexOf('|',p1+1);
+    if(p1<0||p2<0) return;
+    const total=+rest.slice(0,p1), index=+rest.slice(p1+1,p2), data=rest.slice(p2+1);
+    if(!asm.total){ asm.total=total; asm.parts=Array(total).fill(''); }
+    asm.got.add(index); asm.parts[index-1]=data;
+    $('#qrProgress').textContent = `Got parts: ${[...asm.got].sort((a,b)=>a-b).join(', ')} / ${asm.total}`;
+    if(asm.got.size===asm.total){
+      const packed=asm.parts.join(''); resetAsm(); applyPacked(packed);
     }
+  } else {
+    applyPacked(text);
+  }
+}
+async function applyPacked(packed){
+  try{
+    const obj = unpack(packed); // { role, sdp:{type,sdp} }
+    if(!pc) pc=newPC();
 
-    async function finalizeScan(code) {
-      if (!/^[0-9]{6}$/.test(code)) {
-        alert("Scanned content isn’t a 6-digit code. Try again.");
-        return;
-      }
-      codeBox.value = code;
-      await startCloud(code);
-    }
+    if(role==='host' && obj.role==='join'){
+      if(!pc.currentRemoteDescription){
+        await pc.setRemoteDescription(obj.sdp);
+        log('QR: answer applied — connecting…');
+      } else log('QR: duplicate answer ignored');
+    } else if(role==='join' && obj.role==='host'){
+      if(!pc.currentRemoteDescription){
+        await pc.setRemoteDescription(obj.sdp);
+        await pc.setLocalDescription(await pc.createAnswer());
+        await waitIceCompleteOrTimeout(pc, 2000);
+        qrPacked = pack({ role, sdp:{type:pc.localDescription.type, sdp:pc.localDescription.sdp} });
+        qrMode='single'; $('#qrTrouble').style.display='inline'; showQR();
+        log('QR: reply ready — show to Host');
+      } else log('QR: duplicate offer ignored');
+    } else alert('Role mismatch. One must be Host, the other Joiner.');
+  }catch(e){ log('ERR applyPacked', e.message||e); }
+}
+$('#qrApply').onclick=()=>{ const t=$('#qrPaste').value.trim(); if(t){ absorb(t); $('#qrPaste').value=''; } };
 
-    // ---------- Firestore signaling ----------
-    async function startCloud(code) {
-      // Stop scanner if it’s running
-      if (stopQRScan) { try { await stopQRScan(); } catch {} }
-
-      roomDoc = doc(db, "rooms", code);
-      pc = newPC();
-
-      // Create a data channel to make ICE connectivity “active”
-      const ch = pc.createDataChannel("data");
-      ch.onopen = () => log("data: open");
-      ch.onclose = () => log("data: close");
-      ch.onerror = (e) => log("data: error", e?.message || e);
-
-      // Host flow
-      if (role === "host") {
-        try {
-          const offer = await pc.createOffer({ iceRestart: false });
-          await pc.setLocalDescription(offer);
-
-          // Write with a server-set creation time and a client TTL that satisfies your rule
-          const ttlMillis = 60 * 60 * 1000; // 1h
-          const expiresAt = Timestamp.fromMillis(Date.now() + ttlMillis);
-
-          await setDoc(roomDoc, {
-            offer: { type: offer.type, sdp: offer.sdp },
-            type: "offer",
-            createdAt: serverTimestamp(),
-            expiresAt
-          });
-
-          log("Cloud: offer written");
-
-          onSnapshot(roomDoc, async (snap) => {
-            const d = snap.data();
-            if (!d) return;
-            if (d.answer && !pc.currentRemoteDescription) {
-              try {
-                await pc.setRemoteDescription(d.answer);
-                log("Cloud: got answer");
-              } catch (e) {
-                log("ERR setRemoteDescription:", e?.message || e);
-              }
-            }
-          });
-        } catch (e) {
-          handleFsError("Host write/subscribe", e);
-        }
-
-      // Joiner flow
-      } else if (role === "joiner") {
-        try {
-          const snap = await getDoc(roomDoc);
-          const d = snap.data();
-          if (!d?.offer) {
-            alert("No offer in this room yet. Ask the Host to start.");
-            return;
-          }
-          await pc.setRemoteDescription(d.offer);
-
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-
-          const ttlMillis = 60 * 60 * 1000; // 1h
-          const expiresAt = Timestamp.fromMillis(Date.now() + ttlMillis);
-
-          // Preserve existing fields, add answer
-          await setDoc(roomDoc, {
-            ...d,
-            answer: { type: answer.type, sdp: answer.sdp },
-            type: "answer",
-            expiresAt
-          });
-
-          log("Cloud: answer written");
-        } catch (e) {
-          handleFsError("Joiner read/write", e);
-        }
-      } else {
-        alert("Pick Host or Joiner first.");
-      }
-    }
-
-    function handleFsError(ctx, e) {
-      const msg = e?.message || String(e);
-      log(`Firestore error (${ctx}):`, msg);
-      if (/permission/i.test(msg)) {
-        alert("Firestore says “Missing or insufficient permissions.”\n\nLikely causes:\n• The 6-digit code doc doesn’t meet the rules (e.g., missing/late expiresAt)\n• Clock skew vs your TTL rule\n• Reading before Host created the doc\n\nI’ve switched to using Firestore Timestamps and clearer order. Try again now.");
-      } else {
-        alert(`Firestore error (${ctx}): ${msg}`);
-      }
-    }
-  </script>
+let scanner=null;
+$('#scanStart').onclick=()=>{
+  try{
+    scanner = new Html5Qrcode("reader");
+    scanner.start(
+      {facingMode:"environment"},
+      {fps:10, qrbox:240},
+      txt => absorb(txt),
+      _err => {}
+    ).catch(err=>log('scan ERR', err));
+  }catch(e){ log('scanner init ERR', e.message||e); }
+};
+$('#scanStop').onclick=()=>{ scanner?.stop().then(()=>scanner.clear()).catch(()=>{}); scanner=null; };
+</script>
 </body>
 </html>
