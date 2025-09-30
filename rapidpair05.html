@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Rapid LAN Pair — QR (Host candidate only)</title>
+<style>
+  body{margin:0;padding:16px;font:15px/1.4 system-ui;background:#fafafa;color:#222}
+  h1{margin:0 0 12px;font-size:18px}
+  .row{display:grid;gap:12px;grid-template-columns:1fr}
+  @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
+  textarea{width:100%;height:110px;font:12px monospace}
+  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
+  .ok{background:#e8f5e9;color:#1b5e20} .warn{background:#fff8e1;color:#795548} .bad{background:#ffebee;color:#b71c1c}
+  #log{font-size:.85rem;max-height:220px;overflow:auto;white-space:pre-wrap}
+  .qr-nav{display:flex;gap:8px;align-items:center}
+  #qrWrap svg{max-width:100%}
+  .muted{color:#666;font-size:.9rem}
+</style>
+
+<!-- QR + DEFLATE + Scanner (CDNs) -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+<h1>Rapid LAN Pair — QR (no Firebase) <span class="muted" id="ver">v0.7</span></h1>
+
+<div class="row">
+  <div class="card">
+    <h2>Role</h2>
+    <button id="roleHost">Host</button>
+    <button id="roleJoin">Joiner</button>
+    <span id="roleBadge" class="status warn">no role</span>
+  </div>
+  <div class="card">
+    <h2>Status</h2>
+    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>QR Flow (same LAN)</h2>
+  <div class="row">
+    <div class="card">
+      <h3>Make & show my QR</h3>
+      <button id="qrMake" disabled>Create my QR</button>
+      <label style="display:block;margin-top:6px"><input type="checkbox" id="robustECC"> Robust (ECC=M)</label>
+      <div class="muted">Host shows first QR (offer+host candidate). Joiner scans, then shows reply QR (answer+host candidate). Host scans the reply.</div>
+      <div id="qrWrap" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h3>Scan partner QR</h3>
+      <button id="scanStart" disabled>Start Camera Scan</button>
+      <button id="scanStop" disabled>Stop</button>
+      <div id="reader" style="width:320px;max-width:100%;"></div>
+      <textarea id="qrPaste" placeholder="Or paste payload…"></textarea>
+      <button id="qrApply" disabled>Apply</button>
+      <div id="qrProgress" class="muted" style="margin-top:6px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Actions (after connected)</h2>
+  <button id="btnBeep" disabled>Beep</button>
+  <button id="btnChirp" disabled>Chirp</button>
+  <button id="btnPing" disabled>Ping</button>
+</div>
+
+<script>
+/* ===== Utilities ===== */
+const $=s=>document.querySelector(s), logEl=$('#log');
+function log(...a){ const line=a.join(' '); console.log('[LOG]', line); logEl.textContent+=line+"\n"; logEl.scrollTop=logEl.scrollHeight; }
+function badge(el,t,c){ el.textContent=t; el.className='status '+c; }
+
+/* Tiny binary-safe base64url without spread */
+function b64urlFromU8(u8){
+  let bin=''; for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
+  const b64 = btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  return b64;
+}
+function u8FromB64url(s){
+  const b64 = s.replace(/-/g,'+').replace(/_/g,'/').padEnd(s.length + (4 - s.length%4)%4, '=');
+  const bin = atob(b64); const u8=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return u8;
+}
+function pack(obj){
+  const json = JSON.stringify(obj);
+  const def = pako.deflate(json);
+  return 'RP7|' + b64urlFromU8(def);
+}
+function unpack(s){
+  if(!s || typeof s!=='string') throw new Error('empty payload');
+  if(!s.startsWith('RP7|')) throw new Error('bad prefix');
+  const u8 = u8FromB64url(s.slice(4));
+  const txt = pako.inflate(u8, {to:'string'});
+  return JSON.parse(txt);
+}
+
+/* ===== WebRTC ===== */
+let role=null, pc=null, dc=null, firstCandStr=null, firstCandSeen=false, scanner=null;
+
+function newPC(){
+  const cfg = {iceServers:[], iceTransportPolicy:'all'}; // LAN only, super fast host candidates
+  const p = new RTCPeerConnection(cfg);
+
+  p.onicegatheringstatechange = ()=>log('gathering:', p.iceGatheringState);
+  p.oniceconnectionstatechange = ()=>{
+    const s=p.iceConnectionState; log('ice:', s);
+    badge($('#conn'), s, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
+  };
+  p.onsignalingstatechange = ()=>log('signal:', p.signalingState);
+  p.onconnectionstatechange = ()=>{
+    const s=p.connectionState; log('conn:', s);
+    const up=s==='connected';
+    ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
+  };
+  p.ondatachannel = e=>{ dc=e.channel; attachDC(); };
+
+  // Grab first *host* candidate ASAP
+  p.onicecandidate = e=>{
+    if(!e.candidate) return;
+    const cstr = e.candidate.candidate || '';
+    if(cstr.includes(' typ host ') && !firstCandSeen){
+      firstCandSeen = true; firstCandStr = cstr;
+      log('First host candidate:', cstr);
+      // If we were waiting to build a QR (host or joiner reply), do it now
+      maybeBuildQR();
+    }
+  };
+  return p;
+}
+
+function attachDC(){
+  if(!dc) return;
+  badge($('#dc'), dc.readyState, dc.readyState==='open'?'ok':'warn');
+  dc.onopen = ()=>badge($('#dc'),'open','ok');
+  dc.onclose= ()=>badge($('#dc'),'closed','bad');
+  dc.onmessage=e=>log('RX', e.data);
+}
+function send(m){ if(dc&&dc.readyState==='open'){ dc.send(m); log('TX', m);} else { log('DC not open'); } }
+$('#btnBeep').onclick=()=>send('BEEP');
+$('#btnChirp').onclick=()=>send('CHIRP');
+$('#btnPing').onclick =()=>send('PING');
+
+/* ===== Role UI ===== */
+function setRole(r){
+  role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
+  $('#qrMake').disabled=false;
+  $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+  log('Role set to', r);
+}
+$('#roleHost').onclick = ()=>setRole('host');
+$('#roleJoin').onclick = ()=>setRole('join');
+
+/* ===== QR rendering ===== */
+function renderQR(txt){
+  // ECC 'L' default; 'M' if robust checked
+  const ecc = $('#robustECC').checked ? 'M' : 'L';
+  // Keep QR small: set typeNumber=4 (33x33) upper bound; generator will bump if it truly must
+  const qr = qrcode(4, ecc);
+  qr.addData(txt);
+  qr.make();
+  const svg = qr.createSvgTag(6); // scale factor; just visual size, not version
+  $('#qrWrap').innerHTML = svg;
+}
+
+/* Build QR when we have enough info */
+let pendingQRKind=null; // 'host-offer' or 'join-answer'
+function maybeBuildQR(){
+  if(!pendingQRKind) return;
+  if(pendingQRKind==='host-offer'){
+    if(!pc?.localDescription){ log('QR wait: no localDescription yet'); return; }
+    if(!firstCandSeen || !firstCandStr){ log('QR wait: first host candidate not seen yet'); return; }
+    const payload = pack({
+      r:'h',
+      s: pc.localDescription.sdp,  // OFFER SDP
+      c: firstCandStr              // HOST candidate as string
+    });
+    renderQR(payload);
+    log('Host QR ready (offer + host cand).');
+    pendingQRKind=null;
+  }
+  if(pendingQRKind==='join-answer'){
+    if(!pc?.localDescription){ log('QR wait: no localDescription yet'); return; }
+    if(!firstCandSeen || !firstCandStr){ log('QR wait: first host candidate not seen yet'); return; }
+    const payload = pack({
+      r:'j',
+      s: pc.localDescription.sdp,  // ANSWER SDP
+      c: firstCandStr              // JOINER host candidate
+    });
+    renderQR(payload);
+    log('Joiner reply QR ready (answer + host cand).');
+    pendingQRKind=null;
+    // We have our reply QR; stop camera to avoid rescans
+    stopScanner();
+  }
+}
+
+/* ===== Create my QR (depends on role) ===== */
+$('#qrMake').onclick = async ()=>{
+  if(!role){ alert('Pick role'); return; }
+  // Fresh PC each time
+  try{ pc?.close(); }catch{}
+  pc = newPC(); dc=null; firstCandSeen=false; firstCandStr=null; $('#qrWrap').innerHTML='';
+  if(role==='host'){
+    // Host: make datachannel & offer
+    dc = pc.createDataChannel('x'); attachDC();
+    const offer = await pc.createOffer({offerToReceiveAudio:false,offerToReceiveVideo:false});
+    await pc.setLocalDescription(offer);
+    log('Host setLocalDescription(offer). Waiting for first host candidate…');
+    pendingQRKind='host-offer';
+    maybeBuildQR(); // builds once firstCand arrives
+  }else{
+    // Joiner: we can’t create an answer until we’ve scanned Host’s offer.
+    log('Joiner: scan Host QR first, then I will produce reply QR.');
+  }
+};
+
+/* ===== Scanner + apply ===== */
+let html5=null;
+function stopScanner(){
+  if(html5){
+    html5.stop().then(()=>html5.clear()).catch(()=>{}).finally(()=>{
+      html5=null; scanner=null;
+      $('#scanStart').disabled=false; $('#scanStop').disabled=true;
+      log('Scanner stopped.');
+    });
+  }
+}
+$('#scanStart').onclick=()=>{
+  try{
+    html5 = new Html5Qrcode("reader");
+    html5.start(
+      {facingMode:"environment"},
+      {fps:10, qrbox:240},
+      txt => { absorb(txt); },
+      _err => {}
+    ).then(()=>{
+      $('#scanStart').disabled=true; $('#scanStop').disabled=false;
+      log('Scanner started.');
+    }).catch(err=>log('scan start ERR', err));
+  }catch(e){ log('scanner init ERR', e.message||e); }
+};
+$('#scanStop').onclick = stopScanner;
+$('#qrApply').onclick = ()=>{ const t=$('#qrPaste').value.trim(); if(t){ absorb(t); $('#qrPaste').value=''; } };
+
+async function absorb(text){
+  try{
+    const obj = unpack(text); // {r:'h'|'j', s: SDP, c: candidateStr}
+    await applyPacked(obj);
+  }catch(e){
+    log('absorb ERR', (e&&e.message)||e);
+  }
+}
+
+function parseMidFromLocalDesc(desc){
+  // Our single m=application is mid:0 in current browser SDPs
+  // To be safe, find first "a=mid:" line.
+  const m = /a=mid:(\S+)/.exec(desc.sdp || desc);
+  return m ? m[1] : '0';
+}
+
+async function applyPacked(obj){
+  if(!pc) pc = newPC();
+  if(!obj || !obj.r || !obj.s){ log('apply: invalid payload'); return; }
+
+  if(role==='join' && obj.r==='h'){
+    // JOINER == scanning HOST
+    if(pc.signalingState!=='stable'){ log('join: bad state', pc.signalingState); return; }
+    await pc.setRemoteDescription({type:'offer', sdp:obj.s});
+    log('Joiner setRemoteDescription(offer).');
+    // Add Host candidate promptly
+    try{
+      const mid = parseMidFromLocalDesc(obj.s);
+      await pc.addIceCandidate(new RTCIceCandidate({candidate:obj.c, sdpMid:mid, sdpMLineIndex:0}));
+      log('Joiner addIceCandidate(host).');
+    }catch(e){ log('Joiner addIceCandidate ERR', e.message||e); }
+
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    log('Joiner setLocalDescription(answer). Waiting for my first host candidate to build reply QR…');
+    pendingQRKind='join-answer';
+    maybeBuildQR();
+
+  } else if(role==='host' && obj.r==='j'){
+    // HOST == scanning JOINER reply
+    if(pc.signalingState!=='have-local-offer' && pc.signalingState!=='stable'){
+      log('host: unexpected state before answer', pc.signalingState);
+    }
+    await pc.setRemoteDescription({type:'answer', sdp:obj.s});
+    log('Host setRemoteDescription(answer).');
+    try{
+      const mid = parseMidFromLocalDesc(obj.s);
+      await pc.addIceCandidate(new RTCIceCandidate({candidate:obj.c, sdpMid:mid, sdpMLineIndex:0}));
+      log('Host addIceCandidate(joiner).');
+    }catch(e){ log('Host addIceCandidate ERR', e.message||e); }
+    // We’re done; stop camera if running
+    stopScanner();
+
+  } else {
+    alert('Role mismatch. One side must be Host, the other Joiner.');
+  }
+}
+</script>
+</body>
+</html>
