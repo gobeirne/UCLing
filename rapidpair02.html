@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Rapid Pair — QR-only (LAN, Version 4 QR)</title>
+<style>
+  body{margin:0;padding:16px;font:15px/1.4 system-ui;background:#f7f7f8;color:#222}
+  h1{margin:0 0 12px;font-size:18px}
+  .row{display:grid;gap:12px;grid-template-columns:1fr}
+  @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px;margin:10px 0}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
+  textarea{width:100%;height:110px;font:12px monospace}
+  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
+  .ok{background:#e8f5e9;color:#1b5e20} .warn{background:#fff8e1;color:#795548} .bad{background:#ffebee;color:#b71c1c}
+  #log{font-size:.85rem;max-height:220px;overflow:auto;white-space:pre-wrap}
+  #qrWrap{max-width:460px}
+  #ver{color:#666;font-size:.8rem}
+  .muted{color:#666;font-size:.9rem}
+</style>
+<script src="qrcode.js"></script>
+<script src="pako.min.js"></script>
+<script src="html5-qrcode.min.js"></script>
+</head>
+<body>
+<h1>Rapid Pair — QR-only (LAN, Version 4 QR) <span id="ver">v0.4</span></h1>
+
+<div class="row">
+  <div class="card">
+    <h2>Role</h2>
+    <button id="roleHost">Host</button>
+    <button id="roleJoin">Joiner</button>
+    <span id="roleBadge" class="status warn">no role</span>
+    <div class="muted" style="margin-top:6px">
+      Flow: Host shows QR → Joiner scans & shows reply → Host scans reply. No internet needed.
+    </div>
+  </div>
+  <div class="card">
+    <h2>Status</h2>
+    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>QR (offline, same LAN)</h2>
+  <div class="row">
+    <div class="card">
+      <h3>Make & show my QR</h3>
+      <button id="qrMake" disabled>⚡ Create my QR</button>
+      <label style="display:block;margin-top:6px"><input type="checkbox" id="robustECC"> Robust (ECC=M)</label>
+      <div id="qrWrap" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h3>Scan partner QR</h3>
+      <button id="scanStart" disabled>Start Camera Scan</button>
+      <button id="scanStop" disabled>Stop</button>
+      <div id="reader" style="width:320px;max-width:100%;"></div>
+      <textarea id="qrPaste" placeholder="Paste scanned text…"></textarea>
+      <button id="qrApply" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Actions (after connect)</h2>
+  <button id="btnBeep" disabled>Beep</button>
+  <button id="btnChirp" disabled>Chirp</button>
+  <button id="btnPing" disabled>Ping</button>
+</div>
+
+<script>
+/* ===== Helpers ===== */
+const $=s=>document.querySelector(s), logEl=$('#log');
+function log(...a){logEl.textContent+=a.join(' ')+"\n";logEl.scrollTop=logEl.scrollHeight;}
+function badge(el,t,c){el.textContent=t;el.className='status '+c;}
+function b64url(u8){let bin='';for(let i=0;i<u8.length;i++)bin+=String.fromCharCode(u8[i]);const b64=btoa(bin);let out='';for(let i=0;i<b64.length;i++){const ch=b64[i];if(ch==='+')out+='-'; else if(ch==='/')out+='_'; else if(ch==='='){} else out+=ch;} return out;}
+function unb64url(s){let b64='';for(let i=0;i<s.length;i++){const ch=s[i]; if(ch==='-')b64+='+'; else if(ch==='_')b64+='/'; else b64+=ch;} while(b64.length%4)b64+='='; const bin=atob(b64); const u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i); return u8;}
+function pack(o){ return b64url(pako.deflate(JSON.stringify(o))); }
+function unpack(s){ return JSON.parse(pako.inflate(unb64url(s), {to:'string'})); }
+
+/* ===== Role ===== */
+let role=null;
+function setRole(r){
+  role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
+  $('#qrMake').disabled=false;
+  $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+  log('Ready as', r.toUpperCase(), '— Flow is Host→Joiner→Host.');
+}
+$('#roleHost').onclick=()=>setRole('host');
+$('#roleJoin').onclick=()=>setRole('join');
+
+/* ===== WebRTC core (LAN only) ===== */
+let pc,dc,scanner=null;
+function newPC(){
+  const p=new RTCPeerConnection({iceServers:[]});
+  p.oniceconnectionstatechange=()=>log('ice:',p.iceConnectionState);
+  p.onsignalingstatechange=()=>log('signal:',p.signalingState);
+  p.onconnectionstatechange=()=>{
+    const s=p.connectionState; badge($('#conn'),s, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
+    const up=s==='connected'; ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
+  };
+  p.ondatachannel = e=>{ dc=e.channel; attachDC(); };
+  return p;
+}
+function attachDC(){
+  badge($('#dc'),dc.readyState, dc.readyState==='open'?'ok':'warn');
+  dc.onopen = ()=>badge($('#dc'),'open','ok');
+  dc.onclose= ()=>badge($('#dc'),'closed','bad');
+  dc.onmessage=e=>log('RX', e.data);
+}
+function send(m){ if(dc&&dc.readyState==='open') dc.send(m); }
+$('#btnBeep').onclick=()=>send('BEEP');
+$('#btnChirp').onclick=()=>send('CHIRP');
+$('#btnPing').onclick =()=>send('PING');
+
+/* ===== SDP Slimming (first host cand) ===== */
+function firstHostCandidateLines(sdp){
+  const lines=sdp.split(/\r?\n/);
+  const cands=lines.filter(l=>l.startsWith('a=candidate:') && / typ host/.test(l));
+  return cands.length? [cands[0]]:[];
+}
+function minimizeSDPForLAN(fullSDP){
+  const keep=['v=','o=','s=','t=','a=group:','a=extmap-allow-mixed','a=msid-semantic:',
+              'm=application','c=IN IP4','a=ice-ufrag:','a=ice-pwd:','a=fingerprint:',
+              'a=setup:','a=mid:','a=sctp-port:','a=max-message-size:'];
+  const lines=fullSDP.split(/\r?\n/).filter(Boolean);
+  const base=lines.filter(l=>keep.some(k=>l.startsWith(k)));
+  const host1=firstHostCandidateLines(fullSDP);
+  return base.concat(host1).join('\r\n')+'\r\n';
+}
+
+/* ===== QR render (force Version 4) ===== */
+function renderQR(txt){
+  const ecc = $('#robustECC').checked ? 'M' : 'L';
+  const q = qrcode(4, ecc); // force Version 4 (33×33)
+  q.addData(txt); q.make();
+  return q.createSvgTag(8); // scale 8 = nice chunky size
+}
+
+/* ===== QR Flow ===== */
+let qrPacked='';
+async function makeMyQR(){
+  if(!role){ alert('Pick role first'); return; }
+  if(!pc){
+    pc=newPC();
+    if(role==='host'){ dc=pc.createDataChannel('x'); attachDC(); }
+  }
+  if(role==='host' && pc.signalingState==='stable'){
+    await pc.setLocalDescription(await pc.createOffer());
+  }else if(role==='join' && pc.signalingState==='have-remote-offer'){
+    await pc.setLocalDescription(await pc.createAnswer());
+  }else if(role==='join' && pc.signalingState==='stable'){
+    alert('Joiner must scan Host QR first'); return;
+  }
+  const desc=pc.localDescription;
+  const slim=minimizeSDPForLAN(desc.sdp);
+  qrPacked=pack({role, sdp:{type:desc.type,sdp:slim}});
+  $('#qrWrap').innerHTML=renderQR(qrPacked);
+  log('QR ready (',role,') — first host cand only.');
+}
+$('#qrMake').onclick=()=>makeMyQR();
+
+/* ===== Scanner ===== */
+function stopScanner(){
+  if(!scanner) return;
+  scanner.stop().then(()=>scanner.clear()).catch(()=>{}).finally(()=>{
+    scanner=null; $('#scanStart').disabled=false; $('#scanStop').disabled=true;
+  });
+}
+function absorb(text){
+  stopScanner(); // auto-stop once we have something
+  applyPacked(text);
+}
+async function applyPacked(packed){
+  try{
+    const obj=unpack(packed);
+    if(!pc) pc=newPC();
+    if(role==='host' && obj.role==='join'){
+      await pc.setRemoteDescription(new RTCSessionDescription(obj.sdp));
+      log('Host: applied answer');
+    }else if(role==='join' && obj.role==='host'){
+      await pc.setRemoteDescription(new RTCSessionDescription(obj.sdp));
+      log('Joiner: offer applied; making answer QR…');
+      await makeMyQR();
+    }
+  }catch(e){ log('ERR applyPacked', e.message||e); }
+}
+$('#qrApply').onclick=()=>{ const t=$('#qrPaste').value.trim(); if(t) absorb(t); };
+$('#scanStart').onclick=()=>{
+  try{
+    scanner=new Html5Qrcode("reader");
+    $('#scanStart').disabled=true; $('#scanStop').disabled=false;
+    scanner.start(
+      {facingMode:"environment"},
+      {fps:12, qrbox:240},
+      txt=>absorb(txt),
+      _err=>{}
+    ).catch(err=>log('scan ERR',err));
+  }catch(e){ log('scanner init ERR', e.message||e); }
+};
+$('#scanStop').onclick=()=>stopScanner();
+
+/* ===== Startup ===== */
+document.addEventListener('DOMContentLoaded', ()=>{
+  log('Ready. Pick Host/Joiner. Two-step QR handshake, instant on LAN.');
+});
+</script>
+</body>
+</html>
