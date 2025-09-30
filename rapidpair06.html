@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rapid Pair — QR LAN TinySDP</title>
+
+<!--
+  Rapid Pair — QR LAN TinySDP
+  Version 0.8 (full, verbose)
+
+  Changes from previous:
+  - Candidate picking is robust (never “gave up”). Always selects something.
+  - “Trouble scanning?” forces split into ≤4 v4 QR parts, each ≤600 chars.
+  - Full verbose comments & styling restored.
+-->
+
+<style>
+  :root{
+    --bg:#f7f7f8; --fg:#222; --card:#fff; --muted:#666; --br:#ddd;
+    --ok-bg:#e8f5e9; --ok-fg:#1b5e20;
+    --warn-bg:#fff8e1; --warn-fg:#795548;
+    --bad-bg:#ffebee; --bad-fg:#b71c1c;
+  }
+  html,body{height:100%;}
+  body{
+    margin:0; padding:16px;
+    background:var(--bg); color:var(--fg);
+    font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  }
+  h1{margin:0 0 12px; font-size:20px; font-weight:700;}
+  h2{margin:0 0 8px; font-size:16px;}
+  h3{margin:0 0 8px; font-size:15px;}
+
+  .row{display:grid; gap:12px; grid-template-columns:1fr;}
+  @media(min-width:900px){.row{grid-template-columns:1fr 1fr;}}
+
+  .card{
+    background:var(--card); border:1px solid var(--br); border-radius:12px;
+    padding:12px; margin:10px 0;
+  }
+  button{
+    padding:8px 12px; border-radius:10px; border:1px solid #ccc;
+    background:#f5f5f5; cursor:pointer;
+  }
+  button:disabled{opacity:.55; cursor:not-allowed;}
+  input,textarea{padding:6px; border:1px solid #ccc; border-radius:8px;}
+  textarea{
+    width:100%; height:110px;
+    font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+
+  .status{
+    display:inline-block; padding:2px 8px; border-radius:999px;
+    font-size:.9rem; vertical-align:middle;
+  }
+  .ok{ background:var(--ok-bg); color:var(--ok-fg);}
+  .warn{ background:var(--warn-bg); color:var(--warn-fg);}
+  .bad{ background:var(--bad-bg); color:var(--bad-fg);}
+
+  #log{
+    font-size:.85rem; max-height:280px; overflow:auto; white-space:pre-wrap;
+    border:1px dashed var(--br); padding:8px; border-radius:8px; background:#fafafa;
+  }
+
+  #qrWrap svg{max-width:100%; height:auto; display:block; margin:auto;}
+  .muted{color:var(--muted); font-size:.9rem;}
+  .qr-nav{display:flex; gap:8px; align-items:center; justify-content:center; margin-top:8px;}
+  #ver{color:#666; font-size:.85rem; font-weight:400;}
+</style>
+
+<script src="qrcode.js"></script>
+<script src="pako.min.js"></script>
+<script src="html5-qrcode.min.js"></script>
+</head>
+<body>
+
+<h1>Rapid Pair — QR LAN TinySDP <span id="ver">v0.8</span></h1>
+
+<div class="row">
+  <div class="card">
+    <h2>Role</h2>
+    <button id="roleHost">Host</button>
+    <button id="roleJoin">Joiner</button>
+    <span id="roleBadge" class="status warn">no role</span>
+  </div>
+  <div class="card">
+    <h2>Status</h2>
+    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>QR Exchange</h2>
+  <div class="row">
+    <div class="card">
+      <h3>Make QR</h3>
+      <button id="qrMake" disabled>Create my QR</button>
+      <button id="qrTrouble" disabled>⚠ Trouble scanning?</button>
+      <div id="qrWrap" style="margin-top:10px"></div>
+      <div id="qrNav" class="qr-nav" style="display:none;">
+        <button id="qrPrev">◀ Prev</button>
+        <span id="qrIndex"></span>
+        <button id="qrNext">Next ▶</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Scan partner QR</h3>
+      <button id="scanStart" disabled>Start Scan</button>
+      <button id="scanStop" disabled>Stop</button>
+      <div id="reader" style="width:320px; max-width:100%; margin-top:10px;"></div>
+      <textarea id="qrPaste" placeholder="Or paste payload here…"></textarea>
+      <button id="qrApply" disabled>Apply</button>
+      <div id="qrProgress" class="muted"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Actions</h2>
+  <button id="btnBeep" disabled>Beep</button>
+  <button id="btnChirp" disabled>Chirp</button>
+  <button id="btnPing" disabled>Ping</button>
+</div>
+
+<script>
+/* ========== Helpers ========== */
+const $=s=>document.querySelector(s);
+const logEl=$('#log');
+function log(...a){const l=a.join(' ');console.log('[LOG]',l);logEl.textContent+=l+"\n";logEl.scrollTop=logEl.scrollHeight;}
+function badge(el,t,c){el.textContent=t;el.className='status '+c;}
+
+/* base64url + pack/unpack */
+function b64urlFromU8(u8){let bin='';for(let i=0;i<u8.length;i++)bin+=String.fromCharCode(u8[i]);return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+function u8FromB64url(s){const b64=s.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(s.length/4)*4,'=');const bin=atob(b64);const u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);return u8;}
+function pack(o){return b64urlFromU8(pako.deflate(JSON.stringify(o)));}
+function unpack(s){return JSON.parse(pako.inflate(u8FromB64url(s),{to:'string'}));}
+
+/* candidate selection (robust) */
+function pickBestCandidate(sdp){
+  const lines=sdp.split(/\r?\n/).filter(l=>l.startsWith('a=candidate:'));
+  if(!lines.length) return null;
+  let cand=lines.find(l=>/ typ host /.test(l)&&/ udp /.test(l)&&/\d+\.\d+\.\d+\.\d+/.test(l));
+  if(cand) return cand;
+  cand=lines.find(l=>/ typ host /.test(l));
+  if(cand) return cand;
+  cand=lines.find(l=>/ typ srflx /.test(l));
+  if(cand) return cand;
+  return lines[0];
+}
+function extract(re,s){const m=s.match(re);return m?m[1]:null;}
+function buildTinyFromLocal(sdp){
+  const u=extract(/^a=ice-ufrag:(\S+)/m,sdp);
+  const p=extract(/^a=ice-pwd:(\S+)/m,sdp);
+  const f=extract(/^a=fingerprint:sha-256\s+([A-F0-9:]+)/m,sdp);
+  const candLine=pickBestCandidate(sdp);
+  if(!u||!p||!f||!candLine) throw Error('tinySDP missing pieces');
+  const parts=candLine.trim().split(/\s+/);
+  return {u,p,f,c:{ip:parts[4],pt:+parts[5]}};
+}
+function sdpFromTiny(t,asRole){
+  return [
+    'v=0','o=- 0 0 IN IP4 127.0.0.1','s=-','t=0 0',
+    'm=application 9 UDP/DTLS/SCTP webrtc-datachannel','c=IN IP4 0.0.0.0',
+    `a=ice-ufrag:${t.u}`,`a=ice-pwd:${t.p}`,
+    `a=fingerprint:sha-256 ${t.f}`,
+    `a=setup:${asRole==='host'?'actpass':'active'}`,
+    'a=mid:0','a=sctp-port:5000','a=max-message-size:262144',
+    `a=candidate:0 1 udp 2122252543 ${t.c.ip} ${t.c.pt} typ host`
+  ].join('\r\n')+'\r\n';
+}
+
+/* ========== WebRTC ========== */
+let role=null,pc=null,dc=null;
+function newPC(){
+  pc=new RTCPeerConnection({iceServers:[]});
+  pc.oniceconnectionstatechange=()=>badge($('#conn'),pc.iceConnectionState,pc.iceConnectionState==='connected'?'ok':(pc.iceConnectionState==='failed'?'bad':'warn'));
+  pc.onconnectionstatechange=()=>{const s=pc.connectionState;['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=s!=='connected');};
+  pc.ondatachannel=e=>{dc=e.channel;attachDC();};
+}
+function attachDC(){if(!dc)return;badge($('#dc'),dc.readyState,dc.readyState==='open'?'ok':'warn');dc.onopen=()=>badge($('#dc'),'open','ok');dc.onmessage=e=>log('RX',e.data);}
+function send(m){if(dc&&dc.readyState==='open'){dc.send(m);log('TX',m);}}
+
+/* ========== QR handling ========== */
+const PREFIX='U8C|'; const SAFE=600;
+let dense='',chunks=[],idx=0;
+function renderDense(packed){dense=packed;const q=qrcode(0,'L');q.addData(packed);q.make();$('#qrWrap').innerHTML=q.createSvgTag(5);$('#qrTrouble').disabled=false;$('#qrNav').style.display='none';}
+function forceSplit(packed){
+  let n=Math.ceil(packed.length/SAFE); if(n<2)n=2; if(n>4)n=4;
+  const size=Math.ceil(packed.length/n);const arr=[];
+  for(let i=0;i<n;i++){arr.push(`${PREFIX}${n}|${i+1}|${packed.slice(i*size,(i+1)*size)}`);}
+  return arr;
+}
+function showChunk(){const payload=chunks[idx];const q=qrcode(4,'L');q.addData(payload);q.make();$('#qrWrap').innerHTML=q.createSvgTag(6);$('#qrIndex').textContent=`${idx+1}/${chunks.length}`;$('#qrNav').style.display='flex';}
+
+/* Scanner assembly */
+let scanner=null,asm={total:0,parts:[]};
+function resetAsm(){asm={total:0,parts:[]};$('#qrProgress').textContent='';}
+function stopScanner(){if(scanner){scanner.stop().then(()=>scanner.clear()).catch(()=>{});scanner=null;$('#scanStart').disabled=false;$('#scanStop').disabled=true;}}
+function absorb(txt){
+  if(txt.startsWith(PREFIX)){const m=txt.split('|');const total=+m[1],i=+m[2],d=m[3];if(!asm.total){asm.total=total;asm.parts=Array(total).fill('');}asm.parts[i-1]=d;$('#qrProgress').textContent=`Got ${asm.parts.filter(x=>x).length}/${asm.total}`;if(asm.parts.every(x=>x)){const joined=asm.parts.join('');resetAsm();applyPacked(joined);}}else applyPacked(txt);}
+async function applyPacked(packed){
+  try{const obj=unpack(packed);if(!pc)newPC();
+    if(role==='join'&&obj.r==='h'){await pc.setRemoteDescription({type:'offer',sdp:sdpFromTiny(obj.s,'host')});dc=pc.createDataChannel('x');attachDC();const ans=await pc.createAnswer();await pc.setLocalDescription(ans);const tiny=buildTinyFromLocal(pc.localDescription.sdp);renderDense(pack({r:'j',s:tiny}));stopScanner();}
+    else if(role==='host'&&obj.r==='j'){await pc.setRemoteDescription({type:'answer',sdp:sdpFromTiny(obj.s,'join')});stopScanner();}
+  }catch(e){log('ERR applyPacked',e.message||e);}
+}
+
+/* ========== UI ========== */
+$('#roleHost').onclick=()=>{role='host';badge($('#roleBadge'),'Host','ok');$('#qrMake').disabled=false;$('#scanStart').disabled=false;$('#qrApply').disabled=false;};
+$('#roleJoin').onclick=()=>{role='join';badge($('#roleBadge'),'Joiner','ok');$('#qrMake').disabled=false;$('#scanStart').disabled=false;$('#qrApply').disabled=false;};
+$('#qrMake').onclick=async()=>{if(!role)return;if(pc)try{pc.close();}catch{};newPC();
+  if(role==='host'){dc=pc.createDataChannel('x');attachDC();const offer=await pc.createOffer();await pc.setLocalDescription(offer);pc.onicegatheringstatechange=()=>{if(pc.iceGatheringState==='complete'&&!dense){try{const tiny=buildTinyFromLocal(pc.localDescription.sdp);renderDense(pack({r:'h',s:tiny}));}catch(e){log('ERR tiny host',e.message);}}};}
+  else log('Joiner: scan Host QR first.');
+};
+$('#qrTrouble').onclick=()=>{if(!dense)return;chunks=forceSplit(dense);idx=0;showChunk();};
+$('#qrPrev').onclick=()=>{if(idx>0){idx--;showChunk();}};
+$('#qrNext').onclick=()=>{if(idx<chunks.length-1){idx++;showChunk();}};
+$('#scanStart').onclick=()=>{scanner=new Html5Qrcode("reader");scanner.start({facingMode:"environment"},{fps:10,qrbox:240},txt=>absorb(txt),()=>{}).then(()=>{$('#scanStart').disabled=true;$('#scanStop').disabled=false;});};
+$('#scanStop').onclick=()=>stopScanner();
+$('#qrApply').onclick=()=>{const t=$('#qrPaste').value.trim();if(t)absorb(t);}
+$('#btnBeep').onclick=()=>send('BEEP');$('#btnChirp').onclick=()=>send('CHIRP');$('#btnPing').onclick=()=>send('PING');
+
+log('Ready. Pick Host/Joiner. Single dense QR will appear; fallback to Trouble Scanning for ≤4 v4 parts.');
+</script>
+</body>
+</html>
