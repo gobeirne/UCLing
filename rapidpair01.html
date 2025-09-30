@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Pairing Demo — Turbo LAN + Cloud (6-digit) + QR</title>
+<style>
+  body{margin:0;padding:16px;font:15px/1.45 system-ui,Segoe UI,Roboto,Helvetica,Arial;background:#f7f7f8;color:#222}
+  h1{margin:0 0 12px;font-size:18px}
+  .row{display:grid;gap:12px;grid-template-columns:1fr}
+  @media(min-width:980px){.row{grid-template-columns:1fr 1fr}}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px;margin:10px 0}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
+  textarea{width:100%;height:110px;font:12px monospace}
+  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
+  .ok{background:#e8f5e9;color:#1b5e20} .warn{background:#fff8e1;color:#795548} .bad{background:#ffebee;color:#b71c1c}
+  #log{font-size:.85rem;max-height:220px;overflow:auto;white-space:pre-wrap}
+  #qrWrap{max-width:460px}
+  .qr-nav{display:flex;gap:8px;align-items:center}
+  .muted{color:#666;font-size:.9rem}
+  .inline{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+  #ver{color:#666;font-size:.8rem}
+  .tiny{font-size:.8rem}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .mono{font:12px/1.5 monospace}
+</style>
+<script src="qrcode.js"></script>
+<script src="pako.min.js"></script>
+<script src="html5-qrcode.min.js"></script>
+</head>
+<body>
+<h1>Pairing Demo — Turbo LAN + Cloud (6-digit) + QR <span id="ver">v2.2</span></h1>
+
+<div class="row">
+  <div class="card">
+    <h2>Role</h2>
+    <div class="inline">
+      <button id="roleHost">Host</button>
+      <button id="roleJoin">Joiner</button>
+      <span id="roleBadge" class="status warn">no role</span>
+    </div>
+    <div style="margin-top:8px" class="muted tiny">Pick one on each device. Host creates the session; Joiner attaches.</div>
+  </div>
+  <div class="card">
+    <h2>Status</h2>
+    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
+    <div class="tiny mono" id="ipNote"></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Cloud (6-digit code)</h2>
+  <div class="grid2">
+    <div>
+      <label>Code: <input id="code" inputmode="numeric" maxlength="6" style="width:9ch"/></label>
+      <div class="inline" style="margin-top:6px">
+        <button id="randStart" title="Host only">🎲 Host: Random & Start</button>
+        <button id="startCloud">Start / Join</button>
+        <button id="resetRoom">Reset Room</button>
+      </div>
+      <div class="muted tiny" style="margin-top:6px">Uses Firestore as mailbox. We push **one fast host candidate** for instant LAN pairing. TURN is used only if Cloud is chosen and needed.</div>
+    </div>
+    <div>
+      <div><label><input type="checkbox" id="useTurn"> Use TURN (Cloud only)</label></div>
+      <div class="tiny">TURN URI(s) (comma)</div>
+      <input id="turnUrls" placeholder="turn:host:3478, turn:host:5349?transport=tcp" style="width:100%">
+      <div class="tiny">TURN Username</div>
+      <input id="turnUser" placeholder="" style="width:100%">
+      <div class="tiny">TURN Credential</div>
+      <input id="turnPass" placeholder="" style="width:100%">
+      <div class="muted tiny" style="margin-top:6px">Leave blank if you don’t have TURN. LAN + STUN will still work on same network.</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>QR (offline, same LAN)</h2>
+  <div class="row">
+    <div class="card">
+      <h3>Make & show my QR</h3>
+      <div class="inline">
+        <button id="qrMake" disabled>Create my QR (Turbo LAN)</button>
+        <button id="qrTrouble" style="display:none;">⚠ Four fat codes</button>
+      </div>
+      <label style="display:block;margin-top:6px"><input type="checkbox" id="robustECC"> Robust (ECC=M)</label>
+      <div id="qrWrap" style="margin-top:8px"></div>
+      <div id="qrNav" class="qr-nav" style="display:none;">
+        <button id="qrPrev">◀ Prev</button>
+        <span id="qrIndex"></span>
+        <button id="qrNext">Next ▶</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Scan partner QR</h3>
+      <div class="inline">
+        <button id="scanStart" disabled>Start Camera Scan</button>
+        <button id="scanStop" disabled>Stop</button>
+      </div>
+      <div id="reader" style="width:320px;max-width:100%;"></div>
+      <textarea id="qrPaste" placeholder="Paste scanned text…"></textarea>
+      <button id="qrApply" disabled>Apply</button>
+      <div id="qrProgress" class="muted" style="margin-top:6px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Actions</h2>
+  <button id="btnBeep" disabled>Beep</button>
+  <button id="btnChirp" disabled>Chirp</button>
+  <button id="btnPing" disabled>Ping</button>
+</div>
+
+<script type="module">
+/* ======================== Helpers & Logging ======================== */
+const $=s=>document.querySelector(s), logEl=$('#log');
+function log(...a){const m=a.join(' '); console.log('[LOG]', m); logEl.textContent+=m+"\\n"; logEl.scrollTop=logEl.scrollHeight;}
+function badge(el,t,c){el.textContent=t;el.className='status '+c;}
+function sixDigits(x){return (''+x).replace(/\\D/g,'').slice(0,6).padStart(6,'0');}
+function isPriv4(ip){
+  return /^10\\./.test(ip) || /^192\\.168\\./.test(ip) || (/^172\\.(1[6-9]|2\\d|3[0-1])\\./).test(ip);
+}
+/* Safe base64url (no spread) */
+function b64url(u8){let bin='';for(let i=0;i<u8.length;i++)bin+=String.fromCharCode(u8[i]);const b64=btoa(bin);let out='';for(let i=0;i<b64.length;i++){const ch=b64[i]; if(ch==='+')out+='-'; else if(ch==='/')out+='_'; else if(ch==='='){} else out+=ch;}return out;}
+function unb64url(s){let b64='';for(let i=0;i<s.length;i++){const ch=s[i]; if(ch==='-')b64+='+'; else if(ch==='_')b64+='/'; else b64+=ch;}while(b64.length%4)b64+='=';const bin=atob(b64);const u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);return u8;}
+function pack(o){ return b64url(pako.deflate(JSON.stringify(o))); }
+function unpack(s){ return JSON.parse(pako.inflate(unb64url(s), {to:'string'})); }
+
+/* ======================== Role & UI wiring ======================== */
+let role=null;
+function setRole(r){
+  role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
+  const host=r==='host';
+  $('#qrMake').disabled=false; // both can make their local QR (offer for host, answer for join when prompted)
+  $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+  $('#randStart').disabled=!host;
+}
+$('#roleHost').onclick=()=>setRole('host');
+$('#roleJoin').onclick=()=>setRole('join');
+
+/* ======================== WebRTC core ======================== */
+let pc=null, dc=null;
+let remoteSetOnce=false;
+const ipNote=$('#ipNote');
+
+function rtcConfigCloud(){
+  const useT = $('#useTurn').checked;
+  const urls = ($('#turnUrls').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const user = $('#turnUser').value.trim();
+  const pass = $('#turnPass').value.trim();
+  const servers=[];
+  servers.push({urls:'stun:stun.l.google.com:19302'}); // baseline STUN
+  if(useT && urls.length){
+    servers.push({urls, username:user||undefined, credential:pass||undefined});
+  }
+  return { iceServers: servers, iceCandidatePoolSize: 0 };
+}
+
+function rtcConfigLan(){ return { iceServers: [], iceCandidatePoolSize: 0 }; }
+
+function newPC(cfg){
+  const p=new RTCPeerConnection(cfg);
+  p.onicegatheringstatechange=()=>log('gathering:',p.iceGatheringState);
+  p.oniceconnectionstatechange=()=>log('ice:',p.iceConnectionState);
+  p.onsignalingstatechange=()=>log('signal:',p.signalingState);
+  p.onconnectionstatechange=()=>{
+    const s=p.connectionState;
+    badge($('#conn'),s, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
+    const up=s==='connected'; ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
+  };
+  p.ondatachannel=e=>{ dc=e.channel; attachDC(); };
+  return p;
+}
+
+function attachDC(){
+  if(!dc) return;
+  badge($('#dc'),dc.readyState, dc.readyState==='open'?'ok':'warn');
+  dc.onopen = ()=>badge($('#dc'),'open','ok');
+  dc.onclose= ()=>badge($('#dc'),'closed','bad');
+  dc.onmessage=e=>log('RX', e.data);
+}
+function send(m){ if(dc&&dc.readyState==='open') dc.send(m); }
+$('#btnBeep').onclick =()=>send('BEEP');
+$('#btnChirp').onclick=()=>send('CHIRP');
+$('#btnPing').onclick =()=>send('PING');
+
+/* Build a slim SDP keeping exactly one candidate, plus end-of-candidates */
+function makeSlimSDP(full, chosenCandidateLine){
+  const lines=full.split(/\\r?\\n/);
+  const out=[];
+  for(const ln of lines){
+    if(!ln) continue;
+    if(/^a=candidate:/.test(ln)) continue;               // drop all
+    if(/^a=end-of-candidates/.test(ln)) continue;        // we’ll add our own one
+    out.push(ln);
+  }
+  out.push(chosenCandidateLine);
+  out.push('a=end-of-candidates');
+  return out.join('\\r\\n')+'\\r\\n';
+}
+
+/* Extract the first good private IPv4 host candidate (udp) asap */
+function chooseFastHostCandidate(ev){
+  const c = ev.candidate;
+  if(!c) return null;
+  // prefer UDP host, private IPv4
+  if(c.protocol!=='udp') return null;
+  const ip = (c.address||'') || (c.ip||'');
+  if(!ip || !isPriv4(ip)) return null;
+  if(c.type!=='host') return null;
+  ipNote.textContent = `LAN candidate: ${ip}:${c.port}`;
+  return c;
+}
+
+/* ======================== Firebase (with anon auth) ======================== */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js";
+import {
+  initializeFirestore, doc, setDoc, updateDoc, onSnapshot, Timestamp, deleteField,
+  collection, addDoc, getDocs, deleteDoc
+} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+
+const appFB = initializeApp({
+  apiKey:"AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
+  authDomain:"ucpairing.firebaseapp.com",
+  projectId:"ucpairing"
+});
+const auth = getAuth(appFB);
+const db   = initializeFirestore(appFB,{experimentalAutoDetectLongPolling:true});
+
+let authed=false;
+onAuthStateChanged(auth, u=>{ authed=!!u; if(u) log('Firebase: signed in anon'); });
+signInAnonymously(auth).catch(e=>log('Firebase anon auth ERR', e.code||e.message||e));
+
+/* Firestore utils */
+const toJSON = d => d ? {type:d.type, sdp:d.sdp} : null;
+
+/* ======================== Cloud (6-digit) — Turbo LAN in SDP ======================== */
+async function startCloud(codeRaw){
+  if(!role){ alert('Pick role'); return; }
+  if(!authed){ log('Waiting for Firebase auth…'); /* we'll still try */ }
+  const id = sixDigits(codeRaw||Math.floor(Math.random()*1e6));
+  $('#code').value=id;
+
+  const roomRef = doc(db,'rooms',id);
+  const callerC = collection(roomRef,'callerCandidates');
+  const calleeC = collection(roomRef,'calleeCandidates');
+  const expiresAt = Timestamp.fromMillis(Date.now()+7*24*60*60*1000);
+
+  const cfg = rtcConfigCloud();
+  pc = newPC(cfg);
+  remoteSetOnce=false;
+
+  if(role==='host'){
+    dc = pc.createDataChannel('x'); attachDC();
+
+    let sentSlim=false, best=null;
+    pc.onicecandidate = async e=>{
+      try{
+        // Still record all in subcollection (nice for diagnostics), ignore permission errors
+        if(e.candidate){
+          await addDoc(callerC, e.candidate.toJSON()).catch(err=>log('add caller cand ERR', err.message||err));
+          const fast = chooseFastHostCandidate(e);
+          if(fast && !sentSlim){
+            best = fast;
+            const offer = pc.localDescription?.sdp || '';
+            const slim = makeSlimSDP(offer, 'a='+fast.candidate);
+            await setDoc(roomRef, { offer:{type:'offer', sdp:slim}, expiresAt }, { merge:true });
+            sentSlim=true; log('Host: wrote offer with fast LAN candidate');
+          }
+        } else {
+          log('caller: end of candidates (trickle)');
+          if(!sentSlim){
+            await setDoc(roomRef, { offer: toJSON(pc.localDescription), expiresAt }, { merge:true });
+            log('Host: wrote full offer');
+          }
+        }
+      }catch(err){ log('Host onice ERR', err.message||err); }
+    };
+
+    await pc.setLocalDescription(await pc.createOffer({iceRestart:false}));
+
+    // Watch for Answer
+    onSnapshot(roomRef, async snap=>{
+      const d=snap.data()||{};
+      if(d.answer && !pc.currentRemoteDescription){
+        await pc.setRemoteDescription(d.answer);
+        log('Host: got answer');
+      }
+    });
+
+    // Watch callee candidates
+    onSnapshot(calleeC, snap=>{
+      snap.docChanges().forEach(ch=>{
+        if(ch.type==='added') pc.addIceCandidate(ch.doc.data()).catch(()=>{});
+      });
+    });
+
+  } else { // joiner
+    pc.onicecandidate = async e=>{
+      try{
+        if(e.candidate) await addDoc(calleeC, e.candidate.toJSON()).catch(err=>log('add callee cand ERR', err.message||err));
+        else log('callee: end of candidates (trickle)');
+      }catch(err){ log('Joiner onice ERR', err.message||err); }
+    };
+
+    let applied=false;
+    onSnapshot(roomRef, async snap=>{
+      const d=snap.data()||{};
+      if(!applied && d.offer){
+        applied=true;
+        await pc.setRemoteDescription(d.offer);
+        const ans = await pc.createAnswer();
+        await pc.setLocalDescription(ans);
+        // Prefer fast lane: write back slim answer with first private host once seen
+        let sentSlim=false;
+        const stopAfter = Date.now()+1500; // in case no LAN, send full within ~1.5s
+        pc.addEventListener('icecandidate', async ev=>{
+          if(sentSlim) return;
+          const fast = ev.candidate && chooseFastHostCandidate(ev);
+          if(fast){
+            const slim = makeSlimSDP(pc.localDescription.sdp, 'a='+fast.candidate);
+            await setDoc(roomRef, { answer:{type:'answer', sdp:slim}, expiresAt }, { merge:true });
+            sentSlim=true; log('Joiner: wrote answer with fast LAN candidate');
+          } else if(!ev.candidate && !sentSlim){
+            await setDoc(roomRef, { answer: toJSON(pc.localDescription), expiresAt }, { merge:true });
+            sentSlim=true; log('Joiner: wrote full answer');
+          } else if(Date.now()>stopAfter && !sentSlim){
+            await setDoc(roomRef, { answer: toJSON(pc.localDescription), expiresAt }, { merge:true });
+            sentSlim=true; log('Joiner: wrote timeout full answer');
+          }
+        }, {once:false});
+      }
+    });
+
+    // Watch caller candidates (still helpful when not LAN)
+    onSnapshot(callerC, snap=>{
+      snap.docChanges().forEach(ch=>{
+        if(ch.type==='added') pc.addIceCandidate(ch.doc.data()).catch(()=>{});
+      });
+    });
+  }
+}
+
+async function clearRoom(id){
+  const roomRef = doc(db,'rooms', id);
+  const c1 = await getDocs(collection(roomRef,'callerCandidates')).catch(()=>({docs:[]}));
+  const c2 = await getDocs(collection(roomRef,'calleeCandidates')).catch(()=>({docs:[]}));
+  await Promise.all([
+    ...c1.docs.map(d=>deleteDoc(d.ref).catch(()=>{})),
+    ...c2.docs.map(d=>deleteDoc(d.ref).catch(()=>{})),
+    updateDoc(roomRef,{offer:deleteField(),answer:deleteField()}).catch(()=>{})
+  ]);
+  log('Room cleared');
+}
+
+/* Wire Cloud buttons */
+$('#randStart').onclick=()=>{
+  if(role!=='host'){ alert('Only Host can random-start'); return; }
+  const c = String(Math.floor(Math.random()*1e6)).padStart(6,'0');
+  $('#code').value=c; startCloud(c);
+};
+$('#startCloud').onclick = ()=> startCloud($('#code').value || Math.floor(Math.random()*1e6));
+$('#resetRoom').onclick  = async ()=>{
+  const id = sixDigits($('#code').value||''); if(!id) return;
+  try{ pc?.close(); }catch{}
+  await clearRoom(id);
+};
+
+/* ======================== QR (Turbo LAN) ======================== */
+const QR_PREFIX='UCP1|';
+const CHUNK_COUNT=4;
+const SCALE_SINGLE=3, SCALE_CHUNK=6;
+
+function split4(s){ const sz=Math.ceil(s.length/CHUNK_COUNT); return Array.from({length:CHUNK_COUNT},(_,i)=>s.slice(i*sz,(i+1)*sz)); }
+function renderQR(txt,scale,ecc){ const q=qrcode(0,ecc); q.addData(txt); q.make(); return q.createSvgTag(scale); }
+
+let qrPacked='', qrChunks=[], qrMode='single', qrIdx=0;
+
+function showQR(){
+  const ecc = $('#robustECC').checked ? 'M' : 'L';
+  if(qrMode==='single'){
+    $('#qrWrap').innerHTML = renderQR(qrPacked, SCALE_SINGLE, ecc);
+    $('#qrNav').style.display='none';
+  }else{
+    const payload = `${QR_PREFIX}${qrChunks.length}|${qrIdx+1}|${qrChunks[qrIdx]}`;
+    $('#qrWrap').innerHTML = renderQR(payload, SCALE_CHUNK, ecc);
+    $('#qrIndex').textContent = `${qrIdx+1}/${qrChunks.length}`;
+    $('#qrNav').style.display='flex';
+  }
+}
+$('#qrPrev').onclick=()=>{ qrIdx=(qrIdx-1+qrChunks.length)%qrChunks.length; showQR(); };
+$('#qrNext').onclick=()=>{ qrIdx=(qrIdx+1)%qrChunks.length; showQR(); };
+
+async function makeMyQR(){
+  if(!role){ alert('Pick role first'); return; }
+  ipNote.textContent='';
+  pc = newPC(rtcConfigLan()); // LAN only for QR
+  remoteSetOnce=false;
+
+  if(role==='host'){ dc=pc.createDataChannel('x'); attachDC(); }
+
+  // Create offer/answer immediately; we’ll slim to first private host candidate
+  if(role==='host'){
+    await pc.setLocalDescription(await pc.createOffer());
+  }else{
+    // As Joiner, we show nothing yet — our QR is produced only after applying host’s QR/packed
+    log('Joiner: QR will be produced after applying Host payload');
+  }
+
+  let sent=false;
+  pc.onicecandidate = ev=>{
+    if(sent) return;
+    const fast = ev.candidate && chooseFastHostCandidate(ev);
+    if(fast){
+      const base = pc.localDescription?.sdp || '';
+      const slim = makeSlimSDP(base, 'a='+fast.candidate);
+      qrPacked = pack({ role, sdp:{type:pc.localDescription.type, sdp:slim} });
+      qrMode='single'; $('#qrTrouble').style.display='inline'; showQR();
+      sent=true; log('QR: slim SDP ready (fast LAN)');
+      // Enable scanner for Host to capture Joiner reply
+      $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+    } else if(!ev.candidate && !sent){
+      // Fallback (should rarely trigger with LAN)
+      const full = pc.localDescription?.sdp || '';
+      qrPacked = pack({ role, sdp:{type:pc.localDescription.type, sdp:full} });
+      qrMode='single'; $('#qrTrouble').style.display='inline'; showQR();
+      sent=true; log('QR: full SDP used (no LAN host candidate found)');
+      $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+    }
+  };
+}
+
+$('#qrMake').onclick=()=>{ makeMyQR().catch(e=>log('QR make ERR', e.message||e)); };
+$('#qrTrouble').onclick=()=>{ qrChunks=split4(qrPacked); qrIdx=0; qrMode='multi'; showQR(); };
+
+/* Scanner + assembly */
+let asm={total:0, got:new Set(), parts:[]};
+function resetAsm(){ asm={total:0,got:new Set(),parts:[]}; $('#qrProgress').textContent=''; }
+function absorb(text){
+  if(text.startsWith(QR_PREFIX)){
+    const rest=text.slice(QR_PREFIX.length);
+    const p1=rest.indexOf('|'), p2=rest.indexOf('|',p1+1);
+    if(p1<0||p2<0) return;
+    const total=+rest.slice(0,p1), index=+rest.slice(p1+1,p2), data=rest.slice(p2+1);
+    if(!asm.total){ asm.total=total; asm.parts=Array(total).fill(''); }
+    asm.got.add(index); asm.parts[index-1]=data;
+    $('#qrProgress').textContent = `Got parts: ${[...asm.got].sort().join(', ')} / ${asm.total}`;
+    if(asm.got.size===asm.total){
+      const packed=asm.parts.join('');
+      resetAsm(); applyPacked(packed);
+    }
+  } else {
+    applyPacked(text);
+  }
+}
+async function applyPacked(packed){
+  try{
+    const obj = unpack(packed); // { role, sdp:{type,sdp} }
+    if(!pc) pc=newPC(rtcConfigLan());
+
+    if(role==='host' && obj.role==='join'){
+      if(!pc.currentRemoteDescription){
+        await pc.setRemoteDescription(obj.sdp);
+        log('QR: host applied joiner answer — connecting…');
+      } else log('QR: duplicate answer ignored');
+
+    } else if(role==='join' && obj.role==='host'){
+      if(!pc.currentRemoteDescription){
+        await pc.setRemoteDescription(obj.sdp);
+        const ans = await pc.createAnswer();
+        await pc.setLocalDescription(ans);
+
+        // Now create our slim reply immediately on first private host
+        let sent=false;
+        pc.addEventListener('icecandidate', ev=>{
+          if(sent) return;
+          const fast = ev.candidate && chooseFastHostCandidate(ev);
+          if(fast){
+            const slim = makeSlimSDP(pc.localDescription.sdp, 'a='+fast.candidate);
+            qrPacked = pack({ role, sdp:{type:'answer', sdp:slim} });
+            qrMode='single'; $('#qrTrouble').style.display='inline'; showQR();
+            sent=true; log('QR: joiner reply ready (fast LAN) — show to Host');
+          } else if(!ev.candidate && !sent){
+            const full = pc.localDescription.sdp;
+            qrPacked = pack({ role, sdp:{type:'answer', sdp:full} });
+            qrMode='single'; $('#qrTrouble').style.display='inline'; showQR();
+            sent=true; log('QR: joiner reply (full) — show to Host');
+          }
+        });
+
+      } else log('QR: duplicate offer ignored');
+    } else alert('Role mismatch. One must be Host, the other Joiner.');
+  }catch(e){ log('ERR applyPacked', e.message||e); }
+}
+$('#qrApply').onclick=()=>{ const t=$('#qrPaste').value.trim(); if(t){ absorb(t); $('#qrPaste').value=''; } };
+
+let scanner=null;
+$('#scanStart').onclick=()=>{
+  try{
+    scanner = new Html5Qrcode("reader");
+    scanner.start(
+      {facingMode:"environment"},
+      {fps:10, qrbox:240},
+      txt => absorb(txt),
+      _err => {}
+    ).catch(err=>log('scan ERR', err));
+  }catch(e){ log('scanner init ERR', e.message||e); }
+};
+$('#scanStop').onclick=()=>{ scanner?.stop().then(()=>scanner.clear()).catch(()=>{}); scanner=null; };
+
+/* ======================== Notes ======================== */
+log('Ready. Pick Host/Joiner. For instant LAN, prefer QR or Cloud with both on same network.');
+</script>
+</body>
+</html>
