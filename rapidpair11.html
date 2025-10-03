@@ -152,9 +152,9 @@ function extractMinimalSDP(sdp, type){
       // Only keep essential parts of host candidates
       // Format: foundation component protocol priority ip port typ host
       const parts = line.substring(12).split(' ');
-      // Store as: foundation:component:protocol:ip:port (minimal)
+      // Store as: foundation|component|protocol|ip|port (use | to avoid conflicts with IPv6/mDNS)
       if(parts.length >= 6) {
-        minimal.c.push(`${parts[0]}:${parts[1]}:${parts[2]}:${parts[4]}:${parts[5]}`);
+        minimal.c.push(`${parts[0]}|${parts[1]}|${parts[2]}|${parts[4]}|${parts[5]}`);
       }
     }
   }
@@ -175,11 +175,21 @@ function reconstructSDP(minimal){
   sdp += `s=-\r\n`;
   sdp += `t=0 0\r\n`;
   sdp += `a=group:BUNDLE ${minimal.m}\r\n`;
-  sdp += `a=msid-semantic: WMS\r\n`;
+  
+  // Only include msid-semantic in offer
+  if(isOffer) {
+    sdp += `a=msid-semantic: WMS\r\n`;
+  }
   
   // Data channel media line (port 9 is standard placeholder)
   sdp += `m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n`;
   sdp += `c=IN IP4 0.0.0.0\r\n`;
+  
+  // For answer, add a=bundle-only first
+  if(!isOffer) {
+    sdp += `a=bundle-only\r\n`;
+  }
+  
   sdp += `a=ice-ufrag:${minimal.u}\r\n`;
   sdp += `a=ice-pwd:${minimal.p}\r\n`;
   sdp += `a=ice-options:trickle\r\n`;
@@ -195,7 +205,7 @@ function reconstructSDP(minimal){
   // Reconstruct candidates from compact format
   if(minimal.c && minimal.c.length > 0){
     for(const compactCand of minimal.c){
-      const parts = compactCand.split(':');
+      const parts = compactCand.split('|'); // Use | separator to handle mDNS/IPv6
       if(parts.length >= 5){
         const [foundation, component, protocol, ip, port] = parts;
         // Rebuild full candidate line with standard priority calculation
