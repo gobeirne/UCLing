@@ -143,11 +143,13 @@ function trimSDPForLAN(sdp){
 }
 
 /* ================= Role UI ================= */
-let role=null;
+let role=null, hostQRShown=false;
 function setRole(r){
-  role=r; badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
+  role=r; hostQRShown=false;
+  badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
   if(r==='host'){
     $('#qrMake').disabled=false;
+    // Host can't scan until they've shown their QR
     $('#scanStart').disabled=true; $('#scanStop').disabled=true; $('#qrApply').disabled=true;
   }else{
     $('#qrMake').disabled=true;
@@ -403,6 +405,13 @@ $('#qrMake').onclick = async ()=>{
   
   // Show dense first; user can force split with "Trouble scanning?"
   showDense();
+  
+  // Enable scanning for Host to receive Joiner's reply
+  hostQRShown = true;
+  $('#scanStart').disabled=false; 
+  $('#scanStop').disabled=false; 
+  $('#qrApply').disabled=false;
+  log('✓ Show this QR to Joiner. Then prepare to scan their reply QR!');
 };
 
 /* Force V4 handler - strictly enforces V4, increases chunk count as needed */
