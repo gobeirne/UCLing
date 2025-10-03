@@ -581,7 +581,7 @@ function absorb(text){
     if(!asm.got.has(index)){
       asm.got.add(index); 
       asm.parts[index-1]=data;
-      log(`✓ Scanned chunk ${index}/${total}`);
+      // Don't log individual chunks - just update progress display
     }
     
     updateProgress();
@@ -593,7 +593,7 @@ function absorb(text){
       applyPacked(packed);
     }
   }else{
-    log('✓ Scanned single QR');
+    // Single QR - no log needed for scan, just apply
     applyPacked(text);
   }
 }
