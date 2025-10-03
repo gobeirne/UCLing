@@ -120,26 +120,82 @@ function pack(obj){
 }
 function unpack(s){ const u8=b64urlToU8(s); const inf=pako.inflate(u8,{to:'string'}); return JSON.parse(inf); }
 
-/* Trim SDP for LAN-only connections - remove unnecessary candidates and attributes */
-function trimSDPForLAN(sdp){
+/* Extract minimal SDP info needed for datachannel-only LAN connection */
+function extractMinimalSDP(sdp, type){
   const lines = sdp.split('\r\n');
-  const keep = [];
+  const minimal = {
+    t: type === 'offer' ? 'o' : 'a', // single char for type
+    u: '', // ufrag
+    p: '', // pwd
+    f: '', // fingerprint
+    s: '', // setup
+    m: '', // mid
+    c: []  // candidates (host only)
+  };
+  
+  let sctpPort = '';
   
   for(const line of lines){
-    // Skip relay and server reflexive candidates (we only need host candidates for LAN)
-    if(line.includes('a=candidate') && (line.includes('typ relay') || line.includes('typ srflx'))){
-      continue;
+    if(line.startsWith('a=ice-ufrag:')) minimal.u = line.split(':')[1];
+    else if(line.startsWith('a=ice-pwd:')) minimal.p = line.split(':')[1];
+    else if(line.startsWith('a=fingerprint:')) {
+      // Store only the hash part, we know it's sha-256
+      minimal.f = line.split(' ')[1];
     }
-    // Skip some optional attributes that bloat the SDP
-    if(line.startsWith('a=rtcp-fb:') || line.startsWith('a=extmap:') || line.startsWith('a=ssrc:')){
-      continue;
+    else if(line.startsWith('a=setup:')) minimal.s = line.split(':')[1];
+    else if(line.startsWith('a=mid:')) minimal.m = line.split(':')[1];
+    else if(line.startsWith('a=sctp-port:')) sctpPort = line.split(':')[1];
+    else if(line.startsWith('a=candidate:') && line.includes('typ host')){
+      // Only keep essential parts of host candidates
+      // Format: foundation component protocol priority ip port typ host
+      const parts = line.substring(12).split(' ');
+      // Store as: foundation:component:protocol:ip:port (minimal)
+      minimal.c.push(`${parts[0]}:${parts[1]}:${parts[2]}:${parts[4]}:${parts[5]}`);
     }
-    keep.push(line);
   }
   
-  const trimmed = keep.join('\r\n');
-  log(`SDP trimmed: ${sdp.length} → ${trimmed.length} chars (${Math.round((1-trimmed.length/sdp.length)*100)}% reduction)`);
-  return trimmed;
+  // Add sctp port if found (usually 5000)
+  if(sctpPort) minimal.sp = sctpPort;
+  
+  return minimal;
+}
+
+/* Reconstruct full SDP from minimal datachannel-only info */
+function reconstructSDP(minimal){
+  const type = minimal.t === 'o' ? 'offer' : 'answer';
+  const isOffer = minimal.t === 'o';
+  
+  let sdp = `v=0\r\n`;
+  sdp += `o=- ${Date.now()} 2 IN IP4 127.0.0.1\r\n`;
+  sdp += `s=-\r\n`;
+  sdp += `t=0 0\r\n`;
+  sdp += `a=group:BUNDLE ${minimal.m}\r\n`;
+  sdp += `a=msid-semantic: WMS\r\n`;
+  
+  // Data channel media line (port 9 is standard placeholder)
+  sdp += `m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n`;
+  sdp += `c=IN IP4 0.0.0.0\r\n`;
+  sdp += `a=ice-ufrag:${minimal.u}\r\n`;
+  sdp += `a=ice-pwd:${minimal.p}\r\n`;
+  sdp += `a=ice-options:trickle\r\n`;
+  sdp += `a=fingerprint:sha-256 ${minimal.f}\r\n`;
+  sdp += `a=setup:${minimal.s}\r\n`;
+  sdp += `a=mid:${minimal.m}\r\n`;
+  
+  // SCTP config (use provided port or default 5000)
+  const sctpPort = minimal.sp || '5000';
+  sdp += `a=sctp-port:${sctpPort}\r\n`;
+  sdp += `a=max-message-size:262144\r\n`; // Standard 256KB
+  
+  // Reconstruct candidates from compact format
+  for(const compactCand of minimal.c){
+    const [foundation, component, protocol, ip, port] = compactCand.split(':');
+    // Rebuild full candidate line with standard priority calculation
+    const priority = 2130706431; // Standard host priority
+    sdp += `a=candidate:${foundation} ${component} ${protocol} ${priority} ${ip} ${port} typ host generation 0 network-id 1\r\n`;
+  }
+  
+  return sdp;
 }
 
 /* ================= Role UI ================= */
@@ -400,8 +456,10 @@ $('#qrMake').onclick = async ()=>{
   }
   
   // Trim and pack SDP
-  const trimmedSDP = trimSDPForLAN(pc.localDescription.sdp);
-  qrPacked = pack({ role:'host', sdp:{type:pc.localDescription.type, sdp:trimmedSDP} });
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type);
+  qrPacked = pack({ role:'host', sdp: minimalSDP });
+  
+  log(`Minimal SDP extracted. Original: ${pc.localDescription.sdp.length}, Packed: ${qrPacked.length}`);
   
   // Show dense first; user can force split with "Trouble scanning?"
   showDense();
@@ -484,13 +542,14 @@ function absorb(text){
 
 async function applyPacked(packed){
   try{
-    const obj = unpack(packed); // {role:'host'|'join', sdp:{type,sdp}}
+    const obj = unpack(packed); // {role:'host'|'join', sdp: minimal object}
     // Ensure we have a PC
     if(!pc){ pc=newPC(); }
 
     if(role==='join' && obj.role==='host'){
-      // We received Host's offer – create answer + show back
-      await pc.setRemoteDescription(obj.sdp);
+      // We received Host's offer – reconstruct and create answer
+      const fullSDP = reconstructSDP(obj.sdp);
+      await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
       await pc.setLocalDescription(await pc.createAnswer());
       if(pc.iceGatheringState!=='complete'){
         await new Promise(res=>{
@@ -499,9 +558,9 @@ async function applyPacked(packed){
         });
       }
       
-      // Trim and pack reply
-      const trimmedSDP = trimSDPForLAN(pc.localDescription.sdp);
-      const replyPacked = pack({ role:'join', sdp:{type:pc.localDescription.type, sdp:trimmedSDP} });
+      // Pack minimal reply
+      const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type);
+      const replyPacked = pack({ role:'join', sdp: minimalSDP });
       qrPacked = replyPacked;
       stopScanner();
       // Dense first; user can force split if needed
@@ -509,9 +568,10 @@ async function applyPacked(packed){
       log('Joiner: reply ready – show QR to Host');
 
     } else if(role==='host' && obj.role==='join'){
-      // We received Joiner's answer – apply and connect
+      // We received Joiner's answer – reconstruct and apply
       if(!pc){ pc=newPC(); }
-      await pc.setRemoteDescription(obj.sdp);
+      const fullSDP = reconstructSDP(obj.sdp);
+      await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
       log('Host: applied joiner answer');
       stopScanner();
 
