@@ -188,13 +188,19 @@ function reconstructSDP(minimal){
   sdp += `a=max-message-size:262144\r\n`; // Standard 256KB
   
   // Reconstruct candidates from compact format
-  for(const compactCand of minimal.c){
-    const [foundation, component, protocol, ip, port] = compactCand.split(':');
-    // Rebuild full candidate line with standard priority calculation
-    const priority = 2130706431; // Standard host priority
-    sdp += `a=candidate:${foundation} ${component} ${protocol} ${priority} ${ip} ${port} typ host generation 0 network-id 1\r\n`;
+  if(minimal.c && minimal.c.length > 0){
+    for(const compactCand of minimal.c){
+      const parts = compactCand.split(':');
+      if(parts.length >= 5){
+        const [foundation, component, protocol, ip, port] = parts;
+        // Rebuild full candidate line with standard priority calculation
+        const priority = 2130706431; // Standard host priority
+        sdp += `a=candidate:${foundation} ${component} ${protocol} ${priority} ${ip} ${port} typ host generation 0 network-id 1\r\n`;
+      }
+    }
   }
   
+  log('Reconstructed SDP:', sdp.substring(0, 200) + '...');
   return sdp;
 }
 
@@ -543,13 +549,18 @@ function absorb(text){
 async function applyPacked(packed){
   try{
     const obj = unpack(packed); // {role:'host'|'join', sdp: minimal object}
+    log('Unpacked payload:', JSON.stringify(obj).substring(0, 100) + '...');
+    
     // Ensure we have a PC
     if(!pc){ pc=newPC(); }
 
     if(role==='join' && obj.role==='host'){
       // We received Host's offer – reconstruct and create answer
       const fullSDP = reconstructSDP(obj.sdp);
-      await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+      log('Reconstructed SDP length:', fullSDP.length);
+      const sdpType = obj.sdp.t === 'o' ? 'offer' : 'answer';
+      log('Setting remote description type:', sdpType);
+      await pc.setRemoteDescription({type: sdpType, sdp: fullSDP});
       await pc.setLocalDescription(await pc.createAnswer());
       if(pc.iceGatheringState!=='complete'){
         await new Promise(res=>{
