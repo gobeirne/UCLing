@@ -1,0 +1,756 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Pairing Demo – QR (Offline LAN) + Typed Code (Firebase)</title>
+<style>
+  body{margin:0;padding:16px;font:15px/1.4 system-ui;background:#f7f7f8;color:#222}
+  h1{margin:0 0 12px;font-size:18px}
+  .row{display:grid;gap:12px;grid-template-columns:1fr}
+  @media(min-width:900px){.row{grid-template-columns:1fr 1fr}}
+  .row.reverse{display:flex;flex-direction:column-reverse}
+  @media(min-width:900px){.row.reverse{flex-direction:row-reverse}}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px;margin:10px 0}
+  button{padding:8px 12px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  button.success{background:#e8f5e9;border-color:#4caf50}
+  input,textarea{padding:6px;border:1px solid #ccc;border-radius:8px}
+  textarea{width:100%;height:110px;font:12px monospace}
+  .status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.9rem}
+  .ok{background:#e8f5e9;color:#1b5e20}
+  .warn{background:#fff8e1;color:#795548}
+  .bad{background:#ffebee;color:#b71c1c}
+  #log{font-size:.85rem;max-height:220px;overflow:auto;white-space:pre-wrap}
+  #qrWrap{max-width:520px;position:relative}
+  #qrWrap.scanned{border:3px solid #4caf50;border-radius:8px;padding:4px;animation:pulse 0.5s;}
+  @keyframes pulse{0%,100%{transform:scale(1)} 50%{transform:scale(1.02)}}
+  .qr-nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .qr-controls{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  #ver{color:#666;font-size:.8rem}
+  .chip{display:inline-block;padding:3px 8px;margin:2px;border-radius:4px;font-size:.85rem;background:#e3f2fd;color:#1976d2;font-family:monospace;font-weight:bold}
+  .chip.done{background:#c8e6c9;color:#2e7d32}
+  #qrProgress{font-size:1rem;font-weight:bold;padding:8px;background:#f0f0f0;border-radius:6px;text-align:center;min-height:24px}
+  #qrProgress:empty{display:none}
+  #autoAdvance{margin-left:8px}
+  label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+  .tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .tab-btn{padding:8px 16px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer;font-weight:500}
+  .tab-btn.active{background:#e3f2fd;border-color:#1976d2;color:#1976d2}
+  .mode-pane{display:none}
+  .mode-pane.active{display:block}
+  .mono{font-family:monospace;letter-spacing:1px}
+  #hostCodeDisplay{font-size:32px;font-weight:700;letter-spacing:4px;margin:16px 0;padding:16px;background:#f0f0f0;border-radius:8px;text-align:center}
+  .hint{font-size:.9rem;color:#666;margin-top:4px}
+</style>
+
+<!-- Local libs (put these files next to this HTML) -->
+<script src="qrcode.js"></script>
+<script src="pako.min.js"></script>
+<script src="html5-qrcode.min.js"></script>
+</head>
+<body>
+<h1>Pairing Demo – QR (Offline LAN) + Typed Code (Firebase) <span id="ver">v3.0</span></h1>
+
+<div class="row">
+  <div class="card">
+    <h2>Role</h2>
+    <button id="roleHost">Host</button>
+    <button id="roleJoin">Joiner</button>
+    <span id="roleBadge" class="status warn">no role</span>
+    
+    <div id="modeSelect" style="display:none;">
+      <h3 style="margin-top:16px;">Pairing Method</h3>
+      <div class="tabs">
+        <button id="tabQR" class="tab-btn">QR Code (Offline)</button>
+        <button id="tabCode" class="tab-btn">Typed Code (Firebase)</button>
+      </div>
+      <p class="hint">QR is offline LAN-only. Typed Code works anywhere via Firebase (4-6 digit).</p>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Status</h2>
+    <div>Peer: <span id="conn" class="status warn">idle</span> &nbsp; DataChannel: <span id="dc" class="status warn">-</span></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<!-- QR Mode -->
+<div class="card mode-pane" id="qrPane">
+  <h2>QR (offline, same LAN)</h2>
+  <div class="row" id="qrRow">
+    <div class="card" id="hostCard">
+      <h3>Make & show my QR (Host)</h3>
+      <button id="qrMake" disabled>Create my QR</button>
+      <button id="qrTrouble" style="display:none;">⚠ Trouble scanning? (force V4 - more chunks)</button>
+      <div id="qrWrap" style="margin-top:8px"></div>
+      <div id="qrNav" class="qr-nav" style="display:none;">
+        <button id="qrPrev">◀ Prev</button>
+        <span id="qrIndex"></span>
+        <button id="qrNext">Next ▶</button>
+        <label>
+          <input type="checkbox" id="autoAdvance" checked>
+          <span>Auto-advance (3s)</span>
+        </label>
+      </div>
+      <div class="qr-controls" style="display:none;" id="qrControlsWrap">
+        <button id="qrCopy">📋 Copy Text</button>
+        <button id="qrCopyAll" style="display:none;">📋 Copy All Chunks</button>
+      </div>
+    </div>
+    <div class="card" id="joinCard">
+      <h3>Scan partner QR (Joiner)</h3>
+      <div id="qrProgress" style="margin-bottom:8px"></div>
+      <button id="scanStart" disabled>Start Camera Scan</button>
+      <button id="scanStop" disabled>Stop</button>
+      <div id="reader" style="width:320px;max-width:100%;"></div>
+      <textarea id="qrPaste" placeholder="Paste scanned text…"></textarea>
+      <button id="qrApply" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Typed Code Mode -->
+<div class="card mode-pane" id="codePane">
+  <h2>Typed Code (Firebase)</h2>
+  
+  <div class="card" id="hostCodeCard" style="display:none;">
+    <h3>Host</h3>
+    <button id="codeGenerate">Generate Code</button>
+    <div id="hostCodeDisplay" style="display:none;" class="mono">----</div>
+    <button id="codeCopy" style="display:none;">Copy Code</button>
+    <p class="hint">Share this code with the Joiner</p>
+  </div>
+  
+  <div class="card" id="joinCodeCard" style="display:none;">
+    <h3>Joiner</h3>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <label>Code: <input id="codeInput" class="mono" placeholder="####" inputmode="numeric" style="width:10ch;font-size:18px;padding:8px;"/></label>
+      <button id="codeFetch">Connect</button>
+    </div>
+    <p class="hint">Enter the Host's code to connect</p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Actions</h2>
+  <button id="btnBeep" disabled>Beep</button>
+  <button id="btnChirp" disabled>Chirp</button>
+  <button id="btnPing" disabled>Ping</button>
+</div>
+
+<script type="module">
+/* ================= Helpers & UI ================= */
+const $=s=>document.querySelector(s), logEl=$('#log');
+function log(...a){logEl.textContent+=a.join(' ')+"\n";logEl.scrollTop=logEl.scrollHeight;}
+function badge(el,t,c){el.textContent=t;el.className='status '+c;}
+log('Ready. Pick Host/Joiner, then choose QR or Typed Code.');
+
+/* Base64url + deflate packers with max compression */
+function b64urlFromU8(u8){
+  let bin=''; for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function b64urlToU8(s){
+  let b64=s.replace(/-/g,'+').replace(/_/g,'/'); while(b64.length%4) b64+='=';
+  const bin=atob(b64); const u8=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  return u8;
+}
+function pack(obj){ 
+  const json=JSON.stringify(obj); 
+  const def=pako.deflate(json, {level: 9});
+  return b64urlFromU8(def); 
+}
+function unpack(s){ const u8=b64urlToU8(s); const inf=pako.inflate(u8,{to:'string'}); return JSON.parse(inf); }
+
+/* Extract minimal SDP info needed for datachannel-only LAN connection */
+function extractMinimalSDP(sdp, type){
+  const lines = sdp.split('\r\n');
+  const minimal = {
+    t: type === 'offer' ? 'o' : 'a',
+    u: '', p: '', f: '', s: '', m: '', c: []
+  };
+  
+  let sctpPort = '';
+  
+  for(const line of lines){
+    if(line.startsWith('a=ice-ufrag:')) minimal.u = line.split(':')[1];
+    else if(line.startsWith('a=ice-pwd:')) minimal.p = line.split(':')[1];
+    else if(line.startsWith('a=fingerprint:')) {
+      const parts = line.split(' ');
+      if(parts.length >= 2) minimal.f = parts.slice(1).join(' ');
+    }
+    else if(line.startsWith('a=setup:')) minimal.s = line.split(':')[1];
+    else if(line.startsWith('a=mid:')) minimal.m = line.split(':')[1];
+    else if(line.startsWith('a=sctp-port:')) sctpPort = line.split(':')[1];
+    else if(line.startsWith('a=candidate:') && line.includes('typ host')){
+      const parts = line.substring(12).split(' ');
+      if(parts.length >= 6) {
+        minimal.c.push(`${parts[0]}|${parts[1]}|${parts[2]}|${parts[4]}|${parts[5]}`);
+      }
+    }
+  }
+  
+  if(sctpPort) minimal.sp = sctpPort;
+  return minimal;
+}
+
+/* Reconstruct full SDP from minimal datachannel-only info */
+function reconstructSDP(minimal){
+  const type = minimal.t === 'o' ? 'offer' : 'answer';
+  const isOffer = minimal.t === 'o';
+  
+  let sdp = `v=0\r\n`;
+  sdp += `o=- ${Date.now()} 2 IN IP4 127.0.0.1\r\n`;
+  sdp += `s=-\r\nt=0 0\r\n`;
+  sdp += `a=group:BUNDLE ${minimal.m}\r\n`;
+  if(isOffer) sdp += `a=msid-semantic: WMS\r\n`;
+  
+  sdp += `m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n`;
+  if(!isOffer) sdp += `a=bundle-only\r\n`;
+  
+  sdp += `a=ice-ufrag:${minimal.u}\r\n`;
+  sdp += `a=ice-pwd:${minimal.p}\r\n`;
+  sdp += `a=ice-options:trickle\r\n`;
+  sdp += `a=fingerprint:sha-256 ${minimal.f.toUpperCase()}\r\n`;
+  sdp += `a=setup:${minimal.s}\r\n`;
+  sdp += `a=mid:${minimal.m}\r\n`;
+  
+  const sctpPort = minimal.sp || '5000';
+  sdp += `a=sctp-port:${sctpPort}\r\n`;
+  sdp += `a=max-message-size:262144\r\n`;
+  
+  if(minimal.c && minimal.c.length > 0){
+    for(const compactCand of minimal.c){
+      const parts = compactCand.split('|');
+      if(parts.length >= 5){
+        const [foundation, component, protocol, ip, port] = parts;
+        const priority = 2130706431;
+        sdp += `a=candidate:${foundation} ${component} ${protocol} ${priority} ${ip} ${port} typ host generation 0 network-id 1\r\n`;
+      }
+    }
+  }
+  
+  return sdp;
+}
+
+/* ================= Role & Mode UI ================= */
+let role=null, mode=null, hostQRShown=false;
+
+function setRole(r){
+  role=r; hostQRShown=false;
+  badge($('#roleBadge'), r==='host'?'Host':'Joiner','ok');
+  $('#modeSelect').style.display='block';
+  log('Role:', r);
+}
+
+function setMode(m){
+  mode=m;
+  $('#tabQR').classList.toggle('active', m==='qr');
+  $('#tabCode').classList.toggle('active', m==='code');
+  $('#qrPane').classList.toggle('active', m==='qr');
+  $('#codePane').classList.toggle('active', m==='code');
+  
+  if(m==='qr'){
+    const qrRow = $('#qrRow');
+    if(role==='join'){
+      qrRow.classList.add('reverse');
+      $('#hostCard').style.display='none';
+      $('#joinCard').style.display='block';
+      $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+    }else{
+      qrRow.classList.remove('reverse');
+      $('#qrMake').disabled=false;
+      $('#joinCard').style.display='none';
+      $('#hostCard').style.display='block';
+    }
+    log('Mode: QR (offline)');
+  }else{
+    $('#hostCodeCard').style.display = role==='host' ? 'block' : 'none';
+    $('#joinCodeCard').style.display = role==='join' ? 'block' : 'none';
+    ensureFirebaseReady();
+    log('Mode: Typed Code (Firebase)');
+  }
+}
+
+$('#roleHost').onclick=()=>setRole('host');
+$('#roleJoin').onclick=()=>setRole('join');
+$('#tabQR').onclick=()=>setMode('qr');
+$('#tabCode').onclick=()=>setMode('code');
+
+/* ================= WebRTC ================= */
+let pc=null, dc=null;
+function newPC(){
+  const cfg={iceServers:[]};
+  const p=new RTCPeerConnection(cfg);
+  p.onicegatheringstatechange = ()=>log('gathering:', p.iceGatheringState);
+  p.oniceconnectionstatechange = ()=>log('ice:', p.iceConnectionState);
+  p.onsignalingstatechange = ()=>log('signal:', p.signalingState);
+  p.onconnectionstatechange = ()=>{
+    const s=p.connectionState; 
+    badge($('#conn'),s, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
+    const up = s==='connected'; 
+    ['#btnBeep','#btnChirp','#btnPing'].forEach(id=>$(id).disabled=!up);
+    
+    if(s==='connected' && dc && dc.readyState==='open'){
+      stopScanner();
+      if(mode==='qr') $('#qrPane').style.display='none';
+      else if(mode==='code') $('#codePane').style.display='none';
+      log('🎉 Connection established!');
+    }
+  };
+  p.ondatachannel = e=>{ dc=e.channel; attachDC(); };
+  return p;
+}
+function attachDC(){
+  if(!dc) return;
+  badge($('#dc'),dc.readyState, dc.readyState==='open'?'ok':'warn');
+  dc.onopen = ()=>{
+    badge($('#dc'),'open','ok');
+    if(pc && pc.connectionState==='connected'){
+      stopScanner();
+      if(mode==='qr') $('#qrPane').style.display='none';
+      else if(mode==='code') $('#codePane').style.display='none';
+      log('🎉 Connection established!');
+    }
+  };
+  dc.onclose = ()=>badge($('#dc'),'closed','bad');
+  dc.onmessage = e=>log('RX', e.data);
+}
+function send(m){ if(dc&&dc.readyState==='open') dc.send(m); }
+$('#btnBeep').onclick = ()=>send('BEEP');
+$('#btnChirp').onclick= ()=>send('CHIRP');
+$('#btnPing').onclick = ()=>send('PING');
+
+/* ================= QR Encode/Decode ================= */
+const QR_PREFIX='UCP1|';
+const NAV_SCALE=6;
+
+function tryRenderQR(text, typeNumber, ecc='M'){
+  const q = qrcode(typeNumber, ecc);
+  q.addData(text);
+  q.make();
+  return q.createSvgTag(NAV_SCALE);
+}
+function renderDenseOrThrow(s){ return tryRenderQR(s, 0, 'M'); }
+
+function maxPayloadForVersion(ver, parts, ecc='M'){
+  const capacities = {
+    4: 114, 6: 180, 8: 250, 10: 346, 12: 434, 14: 538, 16: 666,
+    18: 778, 20: 906, 24: 1174, 28: 1502, 32: 1853, 36: 2132, 40: 2409
+  };
+  const maxChars = capacities[ver] || 100;
+  const overhead = QR_PREFIX.length + String(parts).length + 1 + String(parts).length + 1;
+  return Math.max(0, maxChars - overhead);
+}
+
+function makeChunks(packed, forceV4=false){
+  if(forceV4){
+    const ver = 4; const maxParts = 20;
+    for(let parts=2; parts<=maxParts; parts++){
+      const maxPay = maxPayloadForVersion(ver, parts);
+      const size = Math.ceil(packed.length / parts);
+      if(size <= maxPay){
+        const out = [];
+        for(let i=0; i<parts; i++){
+          const slice = packed.slice(i*size, Math.min((i+1)*size, packed.length));
+          const framed = `${QR_PREFIX}${parts}|${i+1}|${slice}`;
+          try{
+            tryRenderQR(framed, ver, 'M');
+            out.push({ver, str: framed});
+          }catch(e){ break; }
+        }
+        if(out.length === parts) return out;
+      }
+    }
+    throw Error(`Payload too large for V4 even with ${maxParts} parts`);
+  } else {
+    const versions = [4,6,8,10,12,14,16,18,20,24,28,32,36,40];
+    for(let parts=2; parts<=4; parts++){
+      for(const ver of versions){
+        const size = Math.ceil(packed.length / parts);
+        const out = []; let ok = true;
+        for(let i=0; i<parts; i++){
+          const slice = packed.slice(i*size, Math.min((i+1)*size, packed.length));
+          const framed = `${QR_PREFIX}${parts}|${i+1}|${slice}`;
+          try{
+            tryRenderQR(framed, ver, 'M');
+            out.push({ver, str: framed});
+          }catch(e){ ok=false; break; }
+        }
+        if(ok) return out;
+      }
+    }
+    throw Error('Payload too large');
+  }
+}
+
+let qrPacked='', qrChunks=[], qrIdx=0, chunkMode=false, autoTimer=null;
+
+function showDense(){
+  try{
+    const svg = renderDenseOrThrow(qrPacked);
+    $('#qrWrap').innerHTML = svg;
+    $('#qrNav').style.display='none';
+    $('#qrTrouble').style.display='inline';
+    $('#qrControlsWrap').style.display='flex';
+    $('#qrCopyAll').style.display='none';
+    chunkMode=false;
+    log(`Dense QR shown. Length: ${qrPacked.length}`);
+  }catch(e){
+    log('Dense overflow, chunking…');
+    qrChunks = makeChunks(qrPacked, false);
+    qrIdx=0; chunkMode=true; showChunk();
+    $('#qrTrouble').style.display='inline';
+  }
+}
+
+function showChunk(){
+  if(!qrChunks.length) return;
+  const {ver,str} = qrChunks[qrIdx];
+  try{
+    const svg = tryRenderQR(str, ver, 'M');
+    $('#qrWrap').innerHTML = svg;
+    $('#qrIndex').textContent = `${qrIdx+1}/${qrChunks.length} (V${ver})`;
+    $('#qrNav').style.display='flex';
+    $('#qrControlsWrap').style.display='flex';
+    $('#qrCopyAll').style.display='inline-block';
+    
+    if($('#autoAdvance').checked){
+      clearTimeout(autoTimer);
+      autoTimer = setTimeout(()=>{
+        qrIdx = (qrIdx+1) % qrChunks.length;
+        showChunk();
+      }, 3000);
+    }
+  }catch(e){ log('Chunk render error:', e.message); }
+}
+
+$('#qrPrev').onclick=()=>{ clearTimeout(autoTimer); qrIdx=(qrIdx-1+qrChunks.length)%qrChunks.length; showChunk(); };
+$('#qrNext').onclick=()=>{ clearTimeout(autoTimer); qrIdx=(qrIdx+1)%qrChunks.length; showChunk(); };
+$('#autoAdvance').onchange=()=>{ if(!$('#autoAdvance').checked) clearTimeout(autoTimer); else if(chunkMode) showChunk(); };
+
+async function copyToClipboard(text){
+  try{
+    await navigator.clipboard.writeText(text);
+    return true;
+  }catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  }
+}
+
+$('#qrCopy').onclick = async ()=>{
+  const text = chunkMode ? qrChunks[qrIdx].str : qrPacked;
+  const ok = await copyToClipboard(text);
+  if(ok){
+    $('#qrCopy').textContent = '✓ Copied!';
+    $('#qrCopy').classList.add('success');
+    setTimeout(()=>{ $('#qrCopy').textContent = '📋 Copy Text'; $('#qrCopy').classList.remove('success'); }, 2000);
+    log('Copied');
+  }
+};
+
+$('#qrCopyAll').onclick = async ()=>{
+  const allText = qrChunks.map(c=>c.str).join('\n---\n');
+  const ok = await copyToClipboard(allText);
+  if(ok){
+    $('#qrCopyAll').textContent = '✓ All Copied!';
+    $('#qrCopyAll').classList.add('success');
+    setTimeout(()=>{ $('#qrCopyAll').textContent = '📋 Copy All Chunks'; $('#qrCopyAll').classList.remove('success'); }, 2000);
+    log('All chunks copied');
+  }
+};
+
+/* ================= Host: create offer & QR ================= */
+$('#qrMake').onclick = async ()=>{
+  if(role!=='host'){ alert('Pick Host first'); return; }
+  try{ pc?.close(); }catch{}
+  pc=newPC();
+  dc=pc.createDataChannel('x'); attachDC();
+
+  await pc.setLocalDescription(await pc.createOffer());
+  log('Host: waiting for ICE…');
+
+  if(pc.iceGatheringState!=='complete'){
+    await new Promise(res=>{
+      const h=()=>{ if(pc.iceGatheringState==='complete'){ pc.removeEventListener('icegatheringstatechange',h); res(); } };
+      pc.addEventListener('icegatheringstatechange',h);
+    });
+  }
+  
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type);
+  qrPacked = pack({ role:'host', sdp: minimalSDP });
+  log(`Packed: ${qrPacked.length}`);
+  showDense();
+  
+  hostQRShown = true;
+  $('#scanStart').disabled=false; $('#scanStop').disabled=false; $('#qrApply').disabled=false;
+  $('#joinCard').style.display='block';
+  log('✓ Show QR to Joiner, then scan their reply!');
+};
+
+$('#qrTrouble').onclick = ()=>{
+  if(!qrPacked) return;
+  clearTimeout(autoTimer);
+  try{
+    qrChunks = makeChunks(qrPacked, true);
+    qrIdx=0; chunkMode=true; showChunk();
+    log(`Forced V4: ${qrChunks.length} parts`);
+  }catch(e){ log('V4 split failed:', e.message); }
+};
+
+/* ================= Joiner: scan/apply & reply ================= */
+let scanner=null;
+function stopScanner(){
+  if(!scanner) return;
+  scanner.stop().then(()=>scanner.clear()).catch(()=>{}); scanner=null;
+}
+let asm={total:0, got:new Set(), parts:[]};
+function resetAsm(){ asm={total:0,got:new Set(),parts:[]}; $('#qrProgress').textContent=''; }
+
+function updateProgress(){
+  if(!asm.total) return;
+  let display = 'Scanning: [';
+  for(let i=1; i<=asm.total; i++){
+    display += `${i}${asm.got.has(i)?'☑':'☐'}`;
+    if(i < asm.total) display += ' ';
+  }
+  display += `]`;
+  $('#qrProgress').textContent = display;
+}
+
+function absorb(text){
+  if(text.startsWith(QR_PREFIX)){
+    const rest=text.slice(QR_PREFIX.length);
+    const p1=rest.indexOf('|'); const p2=rest.indexOf('|',p1+1);
+    if(p1<0||p2<0) return;
+    const total=+rest.slice(0,p1), index=+rest.slice(p1+1,p2), data=rest.slice(p2+1);
+    if(!asm.total){ asm.total=total; asm.parts=Array(total).fill(''); }
+    if(!asm.got.has(index)){ asm.got.add(index); asm.parts[index-1]=data; }
+    updateProgress();
+    if(asm.got.size===asm.total){
+      const packed = asm.parts.join('');
+      log('🎉 All chunks received!');
+      resetAsm();
+      applyPacked(packed);
+    }
+  }else{
+    applyPacked(text);
+  }
+}
+
+async function applyPacked(packed){
+  try{
+    const obj = unpack(packed);
+    if(!pc) pc=newPC();
+
+    if(role==='join' && obj.role==='host'){
+      const fullSDP = reconstructSDP(obj.sdp);
+      await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+      await pc.setLocalDescription(await pc.createAnswer());
+      if(pc.iceGatheringState!=='complete'){
+        await new Promise(res=>{
+          const h=()=>{ if(pc.iceGatheringState==='complete'){ pc.removeEventListener('icegatheringstatechange',h); res(); } };
+          pc.addEventListener('icegatheringstatechange',h);
+        });
+      }
+      
+      const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type);
+      const replyPacked = pack({ role:'join', sdp: minimalSDP });
+      qrPacked = replyPacked;
+      stopScanner();
+      $('#joinCard').style.display='none';
+      $('#hostCard').style.display='block';
+      show​​​​​​​​​​​​​​​​Dense();
+      log('Joiner: reply ready – show to Host');
+
+    } else if(role==='host' && obj.role==='join'){
+      const fullSDP = reconstructSDP(obj.sdp);
+      await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+      log('Host: applied joiner answer');
+      stopScanner();
+    } else {
+      log('ERR Role mismatch');
+    }
+  }catch(e){ log('ERR applyPacked', e.message); }
+}
+
+$('#scanStart').onclick=()=>{
+  resetAsm();
+  if(role==='host') $('#hostCard').style.display='none';
+  try{
+    scanner = new Html5Qrcode("reader");
+    scanner.start({facingMode:"environment"},{fps:10,qrbox:240}, txt=>absorb(txt), _err=>{})
+      .catch(err=>log('scan ERR', err));
+  }catch(e){ log('scanner init ERR', e.message); }
+};
+$('#scanStop').onclick=()=>{ stopScanner(); resetAsm(); };
+$('#qrApply').onclick=()=>{ const t=$('#qrPaste').value.trim(); if(t){ absorb(t); $('#qrPaste').value=''; } };
+
+/* ================= Firebase Typed Code ================= */
+let fb = { app:null, db:null, auth:null, initialized:false };
+
+async function ensureFirebaseReady(){
+  if(fb.initialized) return;
+  try{
+    const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js');
+    const { getAuth, signInAnonymously } = await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js');
+    const { getFirestore, doc, getDoc, setDoc, serverTimestamp, onSnapshot } =
+      await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js');
+
+    fb.app = initializeApp({
+      apiKey: "AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
+      authDomain: "ucpairing.firebaseapp.com",
+      projectId: "ucpairing"
+    });
+    fb.auth = getAuth(fb.app);
+    await signInAnonymously(fb.auth);
+    fb.db = getFirestore(fb.app);
+    fb.doc = doc; fb.getDoc = getDoc; fb.setDoc = setDoc; fb.ts = serverTimestamp; fb.onSnapshot = onSnapshot;
+    fb.initialized = true;
+    log('Firebase ready');
+  }catch(e){ log('Firebase ERR:', e.code, e.message); }
+}
+
+/* Host: Generate code & upload payload */
+let hostPacked = '', hostRef = null;
+
+$('#codeGenerate').onclick = async ()=>{
+  if(role!=='host'){ alert('Pick Host first'); return; }
+  if(!fb.initialized){ await ensureFirebaseReady(); }
+  
+  try{ pc?.close(); }catch{}
+  pc = newPC();
+  dc = pc.createDataChannel('x'); attachDC();
+  
+  await pc.setLocalDescription(await pc.createOffer());
+  log('Host: building payload…');
+  
+  if(pc.iceGatheringState !== 'complete'){
+    await new Promise(res => {
+      const h = () => {
+        if(pc.iceGatheringState === 'complete'){
+          pc.removeEventListener('icegatheringstatechange', h);
+          res();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', h);
+    });
+  }
+  
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type);
+  hostPacked = pack({ role:'host', sdp: minimalSDP });
+  log('Host: payload ready, allocating code…');
+  
+  const tries4 = 50, tries6 = 100;
+  
+  async function tryCode(len){
+    const code = String(Math.floor(Math.random() * Math.pow(10, len))).padStart(len, '0');
+    const ref = fb.doc(fb.db, 'pairCodes', code);
+    const snap = await fb.getDoc(ref);
+    if(snap.exists()) return null;
+    
+    await fb.setDoc(ref, {
+      hostPacked,
+      createdAt: fb.ts(),
+      mode: 'v3'
+    });
+    return { code, ref };
+  }
+  
+  let result = null;
+  for(let i=0; i<tries4; i++){
+    result = await tryCode(4);
+    if(result) break;
+  }
+  if(!result){
+    for(let i=0; i<tries6; i++){
+      result = await tryCode(6);
+      if(result) break;
+    }
+  }
+  
+  if(!result){ log('ERR: Could not allocate code'); return; }
+  
+  hostRef = result.ref;
+  $('#hostCodeDisplay').textContent = result.code;
+  $('#hostCodeDisplay').style.display = 'block';
+  $('#codeCopy').style.display = 'inline-block';
+  log('Code:', result.code);
+  
+  fb.onSnapshot(hostRef, async snap => {
+    const data = snap.data() || {};
+    if(data.joinPacked && !pc.currentRemoteDescription){
+      try{
+        const obj = unpack(data.joinPacked);
+        const fullSDP = reconstructSDP(obj.sdp);
+        await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+        log('Host: got Joiner reply, connecting…');
+      }catch(e){ log('Host: apply reply ERR:', e.message); }
+    }
+  });
+};
+
+$('#codeCopy').onclick = async ()=>{
+  try{
+    await navigator.clipboard.writeText($('#hostCodeDisplay').textContent);
+    $('#codeCopy').textContent = '✓ Copied!';
+    $('#codeCopy').classList.add('success');
+    setTimeout(()=>{ $('#codeCopy').textContent = 'Copy Code'; $('#codeCopy').classList.remove('success'); }, 2000);
+    log('Code copied');
+  }catch{ log('Copy failed'); }
+};
+
+$('#codeFetch').onclick = async ()=>{
+  if(role!=='join'){ alert('Pick Joiner first'); return; }
+  if(!fb.initialized){ await ensureFirebaseReady(); }
+  
+  const code = $('#codeInput').value.trim();
+  if(!code){ log('Joiner: enter code'); return; }
+  
+  const ref = fb.doc(fb.db, 'pairCodes', code);
+  const snap = await fb.getDoc(ref);
+  
+  if(!snap.exists()){ log('Joiner: code not found'); return; }
+  
+  const data = snap.data() || {};
+  if(!data.hostPacked){ log('Joiner: no host payload'); return; }
+  
+  const obj = unpack(data.hostPacked);
+  
+  try{ pc?.close(); }catch{}
+  pc = newPC();
+  
+  const fullSDP = reconstructSDP(obj.sdp);
+  await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+  await pc.setLocalDescription(await pc.createAnswer());
+  
+  if(pc.iceGatheringState !== 'complete'){
+    await new Promise(res => {
+      const h = () => {
+        if(pc.iceGatheringState === 'complete'){
+          pc.removeEventListener('icegatheringstatechange', h);
+          res();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', h);
+    });
+  }
+  
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type);
+  const joinPacked = pack({ role:'join', sdp: minimalSDP });
+  
+  await fb.setDoc(ref, { joinPacked, joinedAt: fb.ts() }, { merge:true });
+  log('Joiner: reply uploaded. Host should connect shortly.');
+};
+
+</script>
+</body>
+</html>
