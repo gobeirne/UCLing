@@ -652,39 +652,52 @@ $('#codeGenerate').onclick = async ()=>{
   const tries4 = 50, tries6 = 100;
   
   async function tryCode(len){
-    const code = String(Math.floor(Math.random() * Math.pow(10, len))).padStart(len, '0');
-    const ref = fb.doc(fb.db, 'pairCodes', code);
-    const snap = await fb.getDoc(ref);
-    if(snap.exists()) return null;
-    
-    await fb.setDoc(ref, {
-      hostPacked,
-      createdAt: fb.ts(),
-      mode: 'v3'
-    });
-    return { code, ref };
-  }
-  
-  let result = null;
-  for(let i=0; i<tries4; i++){
-    result = await tryCode(4);
-    if(result) break;
-  }
-  if(!result){
-    for(let i=0; i<tries6; i++){
-      result = await tryCode(6);
-      if(result) break;
+    try {
+      const code = String(Math.floor(Math.random() * Math.pow(10, len))).padStart(len, '0');
+      log('Trying code:', code);
+      const ref = fb.doc(fb.db, 'pairCodes', code);
+      const snap = await fb.getDoc(ref);
+      if(snap.exists()) {
+        log('Code taken, trying another...');
+        return null;
+      }
+      
+      await fb.setDoc(ref, {
+        hostPacked,
+        createdAt: fb.ts(),
+        mode: 'v3'
+      });
+      log('Code allocated successfully!');
+      return { code, ref };
+    } catch(e) {
+      log('ERR in tryCode:', e.message, e.code);
+      return null;
     }
   }
   
-  if(!result){ log('ERR: Could not allocate code'); return; }
+  let result = null;
+  for(let i=0; i<tries4 && !result; i++){
+    result = await tryCode(4);
+  }
+  if(!result){
+    log('4-digit codes exhausted, trying 6-digit...');
+    for(let i=0; i<tries6 && !result; i++){
+      result = await tryCode(6);
+    }
+  }
+  
+  if(!result){ 
+    log('ERR: Could not allocate any code after all attempts'); 
+    return; 
+  }
   
   hostRef = result.ref;
   $('#hostCodeDisplay').textContent = result.code;
   $('#hostCodeDisplay').style.display = 'block';
   $('#codeCopy').style.display = 'inline-block';
-  log('Code:', result.code);
+  log('✓ Your code:', result.code);
   
+  // Listen for joiner reply
   fb.onSnapshot(hostRef, async snap => {
     const data = snap.data() || {};
     if(data.joinPacked && !pc.currentRemoteDescription){
@@ -693,7 +706,9 @@ $('#codeGenerate').onclick = async ()=>{
         const fullSDP = reconstructSDP(obj.sdp);
         await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
         log('Host: got Joiner reply, connecting…');
-      }catch(e){ log('Host: apply reply ERR:', e.message); }
+      }catch(e){ 
+        log('Host: apply reply ERR:', e.message); 
+      }
     }
   });
 };
