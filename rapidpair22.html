@@ -454,9 +454,11 @@ async function controllerGenerateCode(){
   log('Code allocated:', allocatedCode);
   
   // PHASE 1: Write immediately on first host candidate
-  pc.onicecandidate = async (e) => {
-    if(e.candidate && !codeWrittenPhase1){
-      const c = e.candidate.candidate;
+pc.onicecandidate = async (e) => {
+  if(e.candidate){
+    log('Candidate:', e.candidate.candidate); // DEBUG: see all candidates
+    const c = e.candidate.candidate;
+    if(!codeWrittenPhase1){
       if(c.includes('typ host')){
         const minimalNow = extractMinimalSDP(pc.localDescription.sdp, 'offer');
         hostPacked = pack({ role:'host', sdp: minimalNow });
@@ -468,12 +470,14 @@ async function controllerGenerateCode(){
           $('#phaseIndicator').style.display = 'inline-block';
           log('Phase 1: Code ready instantly with host candidates');
         }catch(e){
-          log('Phase 1 write ERR:', e.message);
+          log('Phase 1 write ERR:', e.message, e.code); // More debug info
         }
       }
     }
-  };
-  
+  } else {
+    log('ICE gathering complete (null candidate)');
+  }
+};
   // PHASE 2: Update with full candidates when gathering complete
   pc.onicegatheringstatechange = async () => {
     if(pc.iceGatheringState === 'complete' && codeWrittenPhase1){
