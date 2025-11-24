@@ -197,13 +197,6 @@ let cachedTURNServers = null;
   log('TURN credentials pre-fetched and cached');
 })();
 
-// Then modify getCloudflareTURN to use cache:
-async function getCloudflareTURN() {
-  if(cachedTURNServers){
-    log('Using cached TURN credentials');
-    return cachedTURNServers;
-  }
-
 async function getCloudflareTURN() {
   try {
     log('Fetching Cloudflare TURN credentials...');
