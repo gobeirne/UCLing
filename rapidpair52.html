@@ -1,0 +1,1452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<!-- Enforce strong Content Security Policy -->
+<!--<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src *; img-src 'self' data:; frame-ancestors 'none';">-->
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Device Pairing - Controller & Responder</title>
+<style>
+  body{margin:0;padding:16px;font:15px/1.4 system-ui;background:#f7f7f8;color:#222}
+  h1{margin:0 0 12px;font-size:18px}
+  .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:20px;margin:10px auto;max-width:600px}
+  button{padding:10px 20px;border-radius:10px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer;font-size:15px;margin:4px}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  button.primary{background:#e3f2fd;border-color:#1976d2;color:#1976d2;font-weight:600}
+  button.success{background:#e8f5e9;border-color:#4caf50}
+  button.warning{background:#fff8e1;border-color:#f57c00;color:#e65100}
+  input,textarea{padding:10px;border:1px solid #ccc;border-radius:8px;font-size:16px;width:100%;box-sizing:border-box}
+  textarea{height:80px;font:12px monospace}
+  .status{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.9rem}
+  .ok{background:#e8f5e9;color:#1b5e20}
+  .warn{background:#fff8e1;color:#795548}
+  .bad{background:#ffebee;color:#b71c1c}
+  .step{display:none;margin-top:16px}
+  .step.active{display:block}
+  .mono{font-family:monospace;letter-spacing:2px;font-size:28px;font-weight:700;text-align:center;padding:20px;background:#f0f0f0;border-radius:8px;margin:16px 0}
+  .hint{font-size:.9rem;color:#666;margin:8px 0}
+  .instruction{font-size:1.1rem;font-weight:600;margin:12px 0;color:#333}
+  #qrWrap{text-align:center;margin:16px auto;cursor:pointer;position:relative;max-width:90%;background:#fff;padding:20px;border-radius:8px}
+  #qrWrap svg{display:block;margin:0 auto;background:#fff;padding:10px;max-width:100%;height:auto}
+  #qrWrapResponderReply{text-align:center;margin:16px auto;max-width:90%;background:#fff;padding:20px;border-radius:8px}
+  #qrWrapResponderReply svg{display:block;margin:0 auto;background:#fff;padding:10px;max-width:100%;height:auto}
+  #btnLanQR:hover{color:#666;text-decoration:underline}
+  .qr-nav{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:8px;flex-wrap:wrap}
+  label{display:inline-flex;align-items:center;gap:4px}
+  #reader{width:100%;max-width:400px;margin:12px auto}
+  .reconnect-banner{background:#fff8e1;border:2px solid #f57c00;border-radius:8px;padding:12px;text-align:center;font-weight:600;margin:12px 0}
+  .work-area{display:none;text-align:center;padding:20px}
+  .work-area.active{display:block}
+  .work-area button{margin:8px;padding:12px 24px;font-size:16px}
+  #logSection{margin-top:40px;padding:20px;background:#fafafa;border-top:2px solid #ddd}
+  #logSection h3{margin:0 0 8px;font-size:14px;color:#666;cursor:pointer;user-select:none}
+  #log{font-size:.8rem;max-height:200px;overflow:auto;white-space:pre-wrap;background:#fff;border:1px solid #ddd;padding:8px;border-radius:4px;display:none}
+  #log.visible{display:block}
+  
+  .status-indicator{background:#f0f7ff;border:1px solid #90caf9;border-radius:8px;padding:12px 16px;margin:16px 0;font-size:15px;text-align:center;color:#1565c0;font-weight:500;display:none}
+  .status-indicator.active{display:block}
+  .status-indicator .emoji{font-size:20px;margin-right:8px}
+  
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+  .status-indicator.loading{animation:pulse 1.5s ease-in-out infinite}
+  .status-indicator.success{background:#e8f5e9;border-color:#81c784;color:#2e7d32}
+  .status-indicator.error{background:#ffebee;border-color:#e57373;color:#c62828}
+  
+  .qr-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);z-index:1000;align-items:center;justify-content:center;flex-direction:column}
+  .qr-overlay.active{display:flex}
+  .qr-overlay-content{max-width:90vw;max-height:90vh;text-align:center}
+  .qr-overlay svg{max-width:90vmin;max-height:90vmin}
+  .qr-overlay-close{position:absolute;top:20px;right:20px;background:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:24px;cursor:pointer}
+</style>
+
+<script src="qrcode.js"></script>
+<script src="pako.min.js"></script>
+<script src="html5-qrcode.min.js"></script>
+</head>
+<body>
+<h1>Device Pairing <span style="color:#666;font-size:.8rem">v8.1</span></h1>
+
+<div class="card" id="pairingCard">
+  <div id="step1" class="step active">
+    <h2>Select device role</h2>
+    <div style="text-align:center">
+      <button id="btnController" class="primary">Controller</button>
+      <button id="btnResponder" class="primary">Responder</button>
+    </div>
+  </div>
+
+  <div id="step2controller" class="step">
+    <h2>Controller: Share Connection Code</h2>
+    <div id="controllerStatus" class="status-indicator"></div>
+    
+    <!-- Collapsible code display section -->
+    <div id="controllerCodeSection">
+      <p class="instruction">Share this code with the Responder:</p>
+      <div id="controllerCode" class="mono">----</div>
+      <div style="text-align:center">
+        <button id="btnCopyCode">Copy Code</button>
+      </div>
+      <p style="text-align:center;margin-top:12px">
+        <a href="#" id="btnLanQR" style="display:none;color:#999;font-size:0.9rem;text-decoration:none">No internet? Try LAN QR Code →</a>
+      </p>
+    </div>
+    
+    <p class="hint" id="controllerHint" style="display:none">Generating code...</p>
+    <div id="qrSection" style="display:none;margin-top:20px;padding:12px;background:#f9f9f9;border-radius:8px">
+      <h3 style="margin:0 0 12px;font-size:15px;color:#666">LAN QR Code (Same WiFi Only)</h3>
+      
+      <!-- Collapsible QR display area -->
+      <div id="qrDisplayArea">
+        <div id="qrWrap" style="margin-top:12px"></div>
+        <div id="qrNav" class="qr-nav" style="display:none">
+          <button id="qrPrev">◀ Prev</button>
+          <span id="qrIndex"></span>
+          <button id="qrNext">Next ▶</button>
+          <label><input type="checkbox" id="autoAdvance" checked><span>Auto (1.5s)</span></label>
+        </div>
+        <div style="text-align:center;margin-top:12px">
+          <button id="btnCopyQRText">Copy QR Text</button>
+          <button id="qrTrouble" style="display:none">Trouble scanning? (more chunks)</button>
+        </div>
+        <p class="hint">Scan with Responder's camera. Both devices must be on the same WiFi network.</p>
+      </div>
+      
+      <!-- Scanner section with show/hide toggle -->
+      <div style="margin-top:16px">
+        <button id="btnShowCodeAndQR" style="display:none;margin-bottom:8px">▼ Show my code and QR</button>
+        <button id="scanStartController">Start Camera to Scan Reply</button>
+        <button id="scanStopController" disabled>Stop Camera</button>
+        <div id="qrProgressController" style="font-weight:600;color:#666;margin:8px 0;min-height:20px"></div>
+        <div id="readerController" style="width:100%;max-width:400px;margin:12px auto"></div>
+      </div>
+      <button id="btnHideQR" style="margin-top:12px">Hide QR Code</button>
+    </div>
+  </div>
+
+  <div id="step2responder" class="step">
+    <h2>Responder: Enter Connection Code</h2>
+    <div id="responderStatus" class="status-indicator"></div>
+    
+    <!-- Collapsible code entry section -->
+    <div id="responderCodeSection">
+      <p class="instruction">Enter the code from Controller:</p>
+      <input id="responderCodeInput" class="mono" placeholder="####" inputmode="numeric" style="text-align:center;font-size:24px;letter-spacing:4px;max-width:300px;margin:12px auto;display:block"/>
+      <div style="text-align:center;margin-top:12px">
+        <button id="btnResponderConnect" class="primary">Connect</button>
+      </div>
+      <p class="hint" id="responderHint" style="display:none">Enter the code above.</p>
+    </div>
+    
+    <details style="margin-top:20px;padding:12px;background:#f9f9f9;border-radius:8px">
+      <summary style="cursor:pointer;font-weight:600;color:#666">Alternative: Scan QR Code Instead</summary>
+      <div style="text-align:center;margin:12px 0">
+        <button id="btnShowCodeEntry" style="display:none;margin-bottom:8px">▼ Show code entry</button>
+        <button id="scanStartResponder">Start Camera</button>
+        <button id="scanStopResponder" disabled>Stop Camera</button>
+      </div>
+      <div id="qrProgressResponder" style="font-weight:600;color:#666;margin:8px 0;min-height:20px"></div>
+      <div id="readerResponder"></div>
+      <p class="hint" style="margin-top:12px">Or paste the QR text:</p>
+      <textarea id="qrPasteResponder" placeholder="Paste here..."></textarea>
+      <div style="text-align:center;margin-top:8px">
+        <button id="qrApplyResponder">Apply Pasted Text</button>
+      </div>
+    </details>
+  </div>
+
+  <div id="step4responderReply" class="step">
+    <p class="instruction">Show this QR to the Controller:</p>
+    <div id="qrWrapResponderReply"></div>
+    <div id="qrNavResponder" class="qr-nav" style="display:none">
+      <button id="qrPrevResponder">◀ Prev</button>
+      <span id="qrIndexResponder"></span>
+      <button id="qrNextResponder">Next ▶</button>
+      <label><input type="checkbox" id="autoAdvanceResponder" checked><span>Auto (3s)</span></label>
+    </div>
+    <div style="text-align:center;margin-top:12px">
+      <button id="qrTroubleResponder" style="display:none">Trouble scanning? (more chunks)</button>
+    </div>
+    <p class="hint">Waiting for Controller to scan...</p>
+  </div>
+</div>
+
+<div id="reconnectBanner" class="reconnect-banner" style="display:none">
+  Connection lost. <button id="btnReconnect" style="margin-left:8px">Reconnect</button>
+</div>
+
+<div class="work-area" id="workArea">
+  <h2>Connected! <span id="connStatus" class="status ok">Peer: connected</span></h2>
+  <p style="color:#666;margin:12px 0">DataChannel: <span id="dcStatus" class="status ok">open</span></p>
+  <div style="margin-top:24px">
+    <button id="btnBeep" class="primary">Send BEEP</button>
+    <button id="btnChirp" class="primary">Send CHIRP</button>
+    <button id="btnPing" class="primary">Send PING</button>
+  </div>
+  <div style="margin-top:24px;padding:12px;background:#f0f0f0;border-radius:8px;min-height:60px" id="messageArea">
+    <strong>Messages:</strong>
+    <div id="messages"></div>
+  </div>
+</div>
+
+<div class="qr-overlay" id="qrOverlay">
+  <button class="qr-overlay-close" id="qrOverlayClose">×</button>
+  <div class="qr-overlay-content" id="qrOverlayContent"></div>
+</div>
+
+<div id="logSection">
+  <h3 id="logToggle">▶ Console Logs (click to toggle)</h3>
+  <div id="log"></div>
+</div>
+
+<script type="module">
+
+
+/* ================= Helpers & Logging ================= */
+const $=s=>document.querySelector(s);
+
+// Timestamp helper for browser console (shows ms since page load)
+const startTime = performance.now();
+function timestamp() {
+  return `[${(performance.now() - startTime).toFixed(0)}ms]`;
+}
+
+let logEl;
+function log(...a){
+  // Browser console gets timestamps
+  console.log(timestamp(), ...a);
+  
+  // UI console logs (no timestamps, cleaner)
+  if(!logEl) logEl=$('#log');
+  if(logEl) {
+    logEl.textContent+=a.join(' ')+"\n";
+    logEl.scrollTop=logEl.scrollHeight;
+  }
+}
+function badge(el,t,c){el.textContent=t;el.className='status '+c;}
+
+/* ================= Cloudflare TURN Credentials ================= */
+// Credentials are now securely stored in Cloudflare Worker
+// No API keys exposed in frontend code!
+
+let cachedTURNServers = null;
+let turnCredentialsPromise = null;
+
+// Start fetching immediately when page loads
+turnCredentialsPromise = (async () => {
+  try {
+    cachedTURNServers = await getCloudflareTURN();
+    log('TURN credentials pre-fetched and cached');
+    return cachedTURNServers;
+  } catch(e) {
+    log('Failed to pre-fetch TURN credentials:', e.message);
+    return null;
+  }
+})();
+
+async function getCloudflareTURN() {
+  // If already cached, return immediately
+  if(cachedTURNServers){
+    log('Using cached TURN credentials');
+    return cachedTURNServers;
+  }
+  
+  // If currently fetching, wait for that to complete
+  if(turnCredentialsPromise){
+    log('Waiting for TURN credentials to be ready...');
+    const result = await turnCredentialsPromise;
+    if(result) return result;
+  }
+  
+  try {
+    log('Fetching Cloudflare TURN credentials via secure proxy...');
+    const response = await fetch(
+      'https://turn-credentials-proxy.gregory-obeirne.workers.dev',
+      {
+        method: 'POST'
+      }
+    );
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const data = await response.json();
+    log('Cloudflare TURN credentials generated (valid for 24 hours)');
+    cachedTURNServers = data.iceServers;
+    return data.iceServers;
+  } catch(e) {
+    log('Cloudflare TURN fetch failed:', e.message);
+    log('Falling back to OpenRelay TURN...');
+    const fallback = [
+      {urls: 'stun:stun.l.google.com:19302'},
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ];
+    cachedTURNServers = fallback;
+    return fallback;
+  }
+}
+
+
+
+
+
+$('#logToggle').onclick=()=>{
+  $('#log').classList.toggle('visible');
+  $('#logToggle').textContent = $('#log').classList.contains('visible') ? '▼ Console Logs (click to toggle)' : '▶ Console Logs (click to toggle)';
+};
+
+// Status indicator helper
+function showStatus(elementId, message, type = 'loading') {
+  const el = $(elementId);
+  if (!el) return;
+  el.className = `status-indicator active ${type}`;
+  el.innerHTML = message;
+}
+
+function hideStatus(elementId) {
+  const el = $(elementId);
+  if (el) el.className = 'status-indicator';
+}
+
+log('Ready');
+
+/* Base64url + pako compression */
+function b64urlFromU8(u8){
+  let bin=''; for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function b64urlToU8(s){
+  let b64=s.replace(/-/g,'+').replace(/_/g,'/'); while(b64.length%4) b64+='=';
+  const bin=atob(b64); const u8=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  return u8;
+}
+function pack(obj){ 
+  const json=JSON.stringify(obj); 
+  const def=pako.deflate(json, {level: 9});
+  return b64urlFromU8(def); 
+}
+function unpack(s){ const u8=b64urlToU8(s); const inf=pako.inflate(u8,{to:'string'}); return JSON.parse(inf); }
+
+/* Extract minimal SDP - now handles all candidate types */
+function extractMinimalSDP(sdp, type, includeAllCandidates=false){
+  const lines = sdp.split('\r\n');
+  const minimal = {t: type === 'offer' ? 'o' : 'a', u: '', p: '', f: '', s: '', m: '', c: []};
+  let sctpPort = '';
+  for(const line of lines){
+    if(line.startsWith('a=ice-ufrag:')) minimal.u = line.split(':')[1];
+    else if(line.startsWith('a=ice-pwd:')) minimal.p = line.split(':')[1];
+    else if(line.startsWith('a=fingerprint:')) {
+      const parts = line.split(' ');
+      if(parts.length >= 2) minimal.f = parts.slice(1).join(' ');
+    }
+    else if(line.startsWith('a=setup:')) minimal.s = line.split(':')[1];
+    else if(line.startsWith('a=mid:')) minimal.m = line.split(':')[1];
+    else if(line.startsWith('a=sctp-port:')) sctpPort = line.split(':')[1];
+    else if(line.startsWith('a=candidate:')){
+      const typMatch = line.match(/typ\s+(\w+)/);
+      const candType = typMatch ? typMatch[1] : 'host';
+      
+      if(includeAllCandidates || candType === 'host'){
+        const parts = line.substring(12).split(' ');
+        if(parts.length >= 6) {
+          minimal.c.push(`${parts[0]}|${parts[1]}|${parts[2]}|${parts[4]}|${parts[5]}|${candType}`);
+        }
+      }
+    }
+  }
+  if(sctpPort) minimal.sp = sctpPort;
+  return minimal;
+}
+
+/* Reconstruct SDP - now handles different candidate types */
+function reconstructSDP(minimal){
+  const isOffer = minimal.t === 'o';
+  let sdp = `v=0\r\no=- ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE ${minimal.m}\r\n`;
+  if(isOffer) sdp += `a=msid-semantic: WMS\r\n`;
+  sdp += `m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n`;
+  if(!isOffer) sdp += `a=bundle-only\r\n`;
+  sdp += `a=ice-ufrag:${minimal.u}\r\na=ice-pwd:${minimal.p}\r\na=ice-options:trickle\r\n`;
+  sdp += `a=fingerprint:sha-256 ${minimal.f.toUpperCase()}\r\na=setup:${minimal.s}\r\na=mid:${minimal.m}\r\n`;
+  const sctpPort = minimal.sp || '5000';
+  sdp += `a=sctp-port:${sctpPort}\r\na=max-message-size:262144\r\n`;
+  
+  if(minimal.c && minimal.c.length > 0){
+    for(const compactCand of minimal.c){
+      const parts = compactCand.split('|');
+      if(parts.length >= 6){
+        const [foundation, component, protocol, ip, port, type] = parts;
+        sdp += `a=candidate:${foundation} ${component} ${protocol} 2130706431 ${ip} ${port} typ ${type} generation 0 network-id 1\r\n`;
+      }
+    }
+  }
+  return sdp;
+}
+
+/* ================= UI State Management ================= */
+let role=null, connectionMethod=null;
+
+function showStep(stepId){
+  document.querySelectorAll('.step').forEach(s=>s.classList.remove('active'));
+  $(stepId).classList.add('active');
+}
+
+$('#btnController').onclick=()=>{
+  role='controller';
+  log('Role: Controller');
+  controllerGenerateCode();
+  showStep('#step2controller');
+};
+
+$('#btnResponder').onclick=()=>{
+  role='responder';
+  log('Role: Responder');
+  showStep('#step2responder');
+};
+
+$('#btnReconnect').onclick=()=>{
+  $('#reconnectBanner').style.display='none';
+  $('#pairingCard').style.display='block';
+  $('#workArea').classList.remove('active');
+  showStep('#step1');
+  log('Reconnecting...');
+};
+
+/* ================= WebRTC Core ================= */
+let pc=null, dc=null, sessionData={};
+
+async function newPC(config='lan'){
+  let cfg;
+  
+  if(config === 'lan'){
+    cfg = {iceServers: []};
+  } else if(config === 'stun'){
+    cfg = {
+      iceServers: [{urls: 'stun:stun.cloudflare.com:3478'}]
+    };
+  } else if(config === 'turn'){
+    // Get fresh Cloudflare TURN credentials
+    const iceServers = await getCloudflareTURN();
+    cfg = { iceServers };
+  }
+  
+  const p=new RTCPeerConnection(cfg);
+  let candidateCount = 0;
+  let relayCandidateCount = 0;
+  let iceGatheringStartTime = null;
+  
+  p.onicecandidate = (e) => {
+    if(e.candidate){
+      candidateCount++;
+      
+      // Track when gathering starts
+      if(candidateCount === 1){
+        iceGatheringStartTime = performance.now();
+        console.log(`${timestamp()} 🏁 ICE gathering started`);
+      }
+      
+      // Detailed logging to browser console with timestamps
+      const type = e.candidate.type || 'unknown';
+      const address = e.candidate.address || e.candidate.relatedAddress || 'unknown';
+      const port = e.candidate.port || e.candidate.relatedPort || '?';
+      console.log(`${timestamp()} ICE candidate #${candidateCount} (${type}): ${address}:${port}`);
+      
+      // Count relay candidates silently
+      if(e.candidate.type === 'relay'){
+        relayCandidateCount++;
+      }
+    } else {
+      // Summary at the end
+      const gatheringTime = iceGatheringStartTime ? (performance.now() - iceGatheringStartTime).toFixed(0) : '?';
+      console.log(`${timestamp()} ✅ ICE gathering complete: ${candidateCount} total candidates (${relayCandidateCount} relay) in ${gatheringTime}ms`);
+      if(relayCandidateCount > 0){
+        log(`Found ${relayCandidateCount} relay candidate${relayCandidateCount > 1 ? 's' : ''}`);
+      }
+      log(`ICE gathering complete: ${candidateCount} candidates found`);
+    }
+  };
+  p.onicegatheringstatechange = ()=>{
+    // Don't log here - already logged in onicecandidate when e.candidate is null
+  };
+  p.oniceconnectionstatechange = ()=>{
+    if(p.iceConnectionState === 'connected' || p.iceConnectionState === 'failed'){
+      log('ICE connection:', p.iceConnectionState);
+    }
+    
+    // Detect which path won when connection succeeds
+    if(p.iceConnectionState === 'connected'){
+      p.getStats().then(stats => {
+        // Find the winning candidate pair
+        const pairs = Array.from(stats.values()).filter(s => 
+          s.type === 'candidate-pair' && s.state === 'succeeded'
+        );
+        
+        if(pairs.length > 0){
+          const pair = pairs[0];
+          const local = stats.get(pair.localCandidateId);
+          const remote = stats.get(pair.remoteCandidateId);
+          
+          if(local && remote){
+            // Simple message for UI
+            let pathName = 'Unknown';
+            if(local.candidateType === 'host') pathName = 'Direct LAN';
+            else if(local.candidateType === 'srflx') pathName = 'STUN';
+            else if(local.candidateType === 'relay') pathName = 'TURN Relay';
+            log(`✓ Connected via: ${pathName}`);
+            
+            // Detailed diagnostics for browser console
+            console.log(`${timestamp()} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            console.log(`${timestamp()} 🎯 Connection Established`);
+            console.log(`${timestamp()} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            console.log(`${timestamp()}   Path: ${pathName}`);
+            console.log(`${timestamp()}   Local:  ${local.candidateType} (${local.address || local.ip}:${local.port})`);
+            console.log(`${timestamp()}   Remote: ${remote.candidateType} (${remote.address || remote.ip}:${remote.port})`);
+            console.log(`${timestamp()}   Protocol: ${local.protocol || 'udp'}`);
+            if(pair.currentRoundTripTime){
+              console.log(`${timestamp()}   RTT: ${(pair.currentRoundTripTime * 1000).toFixed(1)}ms`);
+            }
+            console.log(`${timestamp()} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          }
+        }
+      });
+    }
+    
+    if(p.iceConnectionState === 'failed' || p.iceConnectionState === 'disconnected'){
+      handleDisconnect();
+    }
+  };
+  p.onsignalingstatechange = ()=>{}; // Silent - not important for users
+  p.onconnectionstatechange = ()=>{
+    const s=p.connectionState;
+    // Only log important state changes
+    if(s==='connected' || s==='failed' || s==='disconnected'){
+      log('Connection state:', s);
+    }
+    badge($('#connStatus'),`Peer: ${s}`, s==='connected'?'ok':(s==='failed'||s==='disconnected'?'bad':'warn'));
+    if(s==='connected' && dc && dc.readyState==='open'){
+      onConnected();
+    } else if(s==='failed' || s==='disconnected'){
+      handleDisconnect();
+    }
+  };
+  p.ondatachannel = e=>{ dc=e.channel; attachDC(); };
+  return p;
+}
+
+function attachDC(){
+  if(!dc) return;
+  badge($('#dcStatus'),dc.readyState, dc.readyState==='open'?'ok':'warn');
+  dc.onopen = ()=>{
+    badge($('#dcStatus'),'open','ok');
+    log('DataChannel open');
+    if(pc && pc.connectionState==='connected') onConnected();
+  };
+  dc.onclose = ()=>{
+    badge($('#dcStatus'),'closed','bad');
+    log('DataChannel closed');
+    handleDisconnect();
+  };
+  dc.onmessage = e=>{
+    log('RX:', e.data);
+    const msgDiv = document.createElement('div');
+    msgDiv.textContent = `← ${e.data}`;
+    msgDiv.style.color = '#1976d2';
+    msgDiv.style.margin = '4px 0';
+    $('#messages').appendChild(msgDiv);
+  };
+}
+
+function send(m){ 
+  if(dc&&dc.readyState==='open'){
+    dc.send(m);
+    log('TX:', m);
+    const msgDiv = document.createElement('div');
+    msgDiv.textContent = `→ ${m}`;
+    msgDiv.style.color = '#2e7d32';
+    msgDiv.style.margin = '4px 0';
+    $('#messages').appendChild(msgDiv);
+  }
+}
+
+function onConnected(){
+  log('Connected!');
+  showStatus('#controllerStatus', '<span class="emoji">🎉</span> Connected successfully!', 'success');
+  showStatus('#responderStatus', '<span class="emoji">🎉</span> Connected successfully!', 'success');
+  
+  // Clean up Firebase code after successful connection
+  if(hostRef){
+    fb.deleteDoc = fb.deleteDoc || (async (ref) => {
+      const { deleteDoc } = await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js');
+      return deleteDoc(ref);
+    });
+    fb.deleteDoc(hostRef).then(() => {
+      console.log(`${timestamp()} 🗑️ Code deleted from Firebase after successful connection`);
+    }).catch(err => {
+      console.log(`${timestamp()} Failed to delete code:`, err.message);
+    });
+  }
+  
+  setTimeout(() => {
+    $('#pairingCard').style.display='none';
+    $('#reconnectBanner').style.display='none';
+    $('#workArea').classList.add('active');
+    stopAllScanners();
+  }, 1000);
+}
+
+function handleDisconnect(){
+  if($('#workArea').classList.contains('active')){
+    log('Connection lost - showing reconnect option');
+    $('#reconnectBanner').style.display='block';
+  }
+}
+
+$('#btnBeep').onclick = ()=>send('BEEP');
+$('#btnChirp').onclick= ()=>send('CHIRP');
+$('#btnPing').onclick = ()=>send('PING');
+
+/* ================= Firebase ================= */
+// Note: Codes are cleaned up after successful connection (client-side).
+// For automatic cleanup of abandoned codes, install Firebase Extension:
+// "Delete Collections" or "Firestore TTL" extension, configured to delete
+// documents in 'pairs' collection older than 24 hours based on 'ts' field.
+// Alternative: Use Cloud Functions scheduled task for cleanup.
+let fb = {app:null, db:null, auth:null, initialized:false};
+
+async function ensureFirebaseReady(){
+  if(fb.initialized) return;
+  try{
+    const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js');
+    const { getAuth, signInAnonymously, onAuthStateChanged } = await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js');
+    const { getFirestore, doc, getDoc, setDoc, serverTimestamp, onSnapshot } =
+      await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js');
+
+    fb.app = initializeApp({
+      apiKey: "AIzaSyBZhqD0RE0miHDHhhlDZerGIsD0S5oy4Yw",
+      authDomain: "ucpairing.firebaseapp.com",
+      projectId: "ucpairing"
+    });
+    
+    fb.auth = getAuth(fb.app);
+    
+    // Suppress token refresh errors by handling auth state changes
+    onAuthStateChanged(fb.auth, (user) => {
+      if (!user) {
+        // Token refresh failed, quietly re-authenticate
+        signInAnonymously(fb.auth).catch(() => {
+          // Silently ignore - will retry on next operation
+        });
+      }
+    }, (error) => {
+      // Suppress token refresh network errors (they auto-recover)
+      if (error.code !== 'auth/network-request-failed' && 
+          error.code !== 'auth/internal-error') {
+        console.error(`${timestamp()} Auth error:`, error);
+      }
+    });
+    
+    // Anonymous authentication (required by Firestore security rules)
+    const userCredential = await signInAnonymously(fb.auth);
+    log('Firebase authenticated:', userCredential.user.uid.substring(0, 8) + '...');
+    
+    fb.db = getFirestore(fb.app);
+    fb.doc = doc; fb.getDoc = getDoc; fb.setDoc = setDoc; fb.ts = serverTimestamp; fb.onSnapshot = onSnapshot;
+    fb.initialized = true;
+    log('Firebase ready');
+  }catch(e){ 
+    log('Firebase ERR:', e.code, e.message);
+    throw e; // Propagate error so calling code knows initialization failed
+  }
+}
+
+/* Controller: Same Network (LAN only, instant) */
+let hostRef = null;
+
+
+/* Controller: Relay (TURN enabled for restrictive networks) */
+/* ================= Controller: Unified Connection ================= */
+// Tries all connection paths (direct LAN, STUN, TURN relay)
+// WebRTC automatically selects the fastest available path
+async function controllerGenerateCode(){
+  try {
+    await ensureFirebaseReady();
+  } catch(e) {
+    showStatus('#controllerStatus', '<span class="emoji">❌</span> Connection error. Check your internet.', 'error');
+    log('Failed to initialize Firebase:', e.message);
+    return;
+  }
+  
+  showStatus('#controllerStatus', '<span class="emoji">⏳</span> Initializing connection...', 'loading');
+  
+  try{ pc?.close(); }catch{}
+  // Use 'turn' config which includes all candidate types
+  pc = await newPC('turn');
+  dc = pc.createDataChannel('x'); 
+  attachDC();
+  
+  showStatus('#controllerStatus', '<span class="emoji">🔑</span> Generating pairing code...', 'loading');
+  await pc.setLocalDescription(await pc.createOffer());
+  log('Controller: generating offer');
+  
+  // Wait for ICE gathering with timeout
+  if(pc.iceGatheringState !== 'complete'){
+    const gatheringPromise = new Promise(res => {
+      const h = () => {
+        if(pc.iceGatheringState === 'complete'){
+          pc.removeEventListener('icegatheringstatechange', h);
+          res('complete');
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', h);
+    });
+    
+    const timeoutPromise = new Promise(res => {
+      setTimeout(() => res('timeout'), 2000); // 2 second timeout - get code fast!
+    });
+    
+    const result = await Promise.race([gatheringPromise, timeoutPromise]);
+    
+    if(result === 'timeout'){
+      log('Code ready (ICE gathering continues in background)');
+    }
+  }
+  
+  // Include ALL candidates in the offer
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, 'offer', true);
+  const hostPacked = pack({ role:'host', sdp: minimalSDP });
+  log('Offer ready, allocating code...');
+  
+  // Show LAN QR button once code is ready (will generate LAN-only QR)
+  $('#btnLanQR').style.display = 'inline';
+  
+  async function tryCode(len){
+    const code = String(Math.floor(Math.random() * Math.pow(10, len))).padStart(len, '0');
+    const ref = fb.doc(fb.db, 'pairs', code);
+    const snap = await fb.getDoc(ref);
+    if(snap.exists()) return null;
+    await fb.setDoc(ref, {offer: hostPacked, ts: fb.ts()});
+    return { code, ref };
+  }
+  
+  let result = null;
+  for(let i=0; i<50 && !result; i++) result = await tryCode(4);
+  if(!result) for(let i=0; i<100 && !result; i++) result = await tryCode(6);
+  
+  if(!result){ 
+    log('ERR: Could not allocate code');
+    showStatus('#controllerStatus', '<span class="emoji">❌</span> Error: Could not allocate code', 'error');
+    return; 
+  }
+  
+  hostRef = result.ref;
+  $('#controllerCode').textContent = result.code;
+  
+  // Get current candidate count from the peer connection
+  const initialCandidateCount = pc.iceConnectionState !== 'closed' ? 
+    (pc.localDescription?.sdp.match(/a=candidate/g) || []).length : 0;
+  
+  showStatus('#controllerStatus', 
+    `<span class="emoji">✅</span> Code ready!`, 
+    'success'
+  );
+  log('Code ready:', result.code);
+  
+  // If still gathering, track in console but don't update UI
+  if(pc.iceGatheringState !== 'complete'){
+    console.log(`${timestamp()} ⏳ Code shown with ${initialCandidateCount} candidates, gathering continues...`);
+    
+    const updateInterval = setInterval(() => {
+      const currentCount = (pc.localDescription?.sdp.match(/a=candidate/g) || []).length;
+      if(currentCount > initialCandidateCount){
+        const additionalCount = currentCount - initialCandidateCount;
+        console.log(`${timestamp()} 📈 +${additionalCount} additional candidate${additionalCount > 1 ? 's' : ''} found (${currentCount} total)`);
+        // Keep UI clean - no updates for additional candidates
+      }
+      
+      if(pc.iceGatheringState === 'complete'){
+        clearInterval(updateInterval);
+        const finalCount = (pc.localDescription?.sdp.match(/a=candidate/g) || []).length;
+        console.log(`${timestamp()} ✅ All paths ready: ${finalCount} total candidates`);
+      }
+    }, 500);
+  }
+  
+  fb.onSnapshot(hostRef, async snap => {
+    const data = snap.data() || {};
+    if(data.answer && !pc.currentRemoteDescription){
+      try{
+        showStatus('#controllerStatus', '<span class="emoji">🔗</span> Responder found! Connecting...', 'loading');
+        const obj = unpack(data.answer);
+        const fullSDP = reconstructSDP(obj.sdp);
+        await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+        log('Controller: got answer, connecting...');
+      }catch(e){ log('Controller: apply answer ERR:', e.message); }
+    }
+  });
+}
+
+$('#btnCopyCode').onclick = async ()=>{
+  try{
+    await navigator.clipboard.writeText($('#controllerCode').textContent);
+    $('#btnCopyCode').textContent = 'Copied!';
+    $('#btnCopyCode').classList.add('success');
+    setTimeout(()=>{ $('#btnCopyCode').textContent = 'Copy Code'; $('#btnCopyCode').classList.remove('success'); }, 2000);
+    log('Code copied');
+  }catch{ log('Copy failed'); }
+};
+
+$('#btnCopyQRText').onclick = async ()=>{
+  if(!qrPacked){
+    log('No QR data to copy');
+    return;
+  }
+  try{
+    await navigator.clipboard.writeText(qrPacked);
+    $('#btnCopyQRText').textContent = 'Copied!';
+    $('#btnCopyQRText').classList.add('success');
+    setTimeout(()=>{ 
+      $('#btnCopyQRText').textContent = 'Copy QR Text'; 
+      $('#btnCopyQRText').classList.remove('success'); 
+    }, 2000);
+    log('QR text copied');
+  }catch{ log('QR text copy failed'); }
+};
+
+let isGeneratingLanQR = false;
+
+$('#btnLanQR').onclick = async (e)=>{
+  e.preventDefault(); // Prevent link navigation
+  
+  if(isGeneratingLanQR){
+    console.log(`${timestamp()} ⚠️ Already generating LAN QR, ignoring click`);
+    return;
+  }
+  
+  isGeneratingLanQR = true;
+  console.log(`${timestamp()} 🔵 LAN QR button clicked, generating LAN-only QR...`);
+  $('#btnLanQR').style.display = 'none';
+  $('#qrSection').style.display = 'block';
+  
+  // Generate LAN-only QR (no TURN/STUN)
+  try{ pc?.close(); }catch{}
+  pc = await newPC('lan');
+  dc = pc.createDataChannel('x');
+  attachDC();
+  
+  await pc.setLocalDescription(await pc.createOffer());
+  log('Generating LAN-only QR for offline pairing...');
+  
+  // Wait for ICE gathering
+  if(pc.iceGatheringState !== 'complete'){
+    await new Promise(res => {
+      const h = () => {
+        if(pc.iceGatheringState === 'complete'){
+          pc.removeEventListener('icegatheringstatechange', h);
+          res();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', h);
+    });
+  }
+  
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, 'offer', false);
+  qrPacked = pack({ role:'host', sdp: minimalSDP });
+  console.log(`${timestamp()} 📱 LAN QR generated (${qrPacked.length} chars, host candidates only)`);
+  showDenseQR(qrPacked, '#qrWrap', '#qrNav', '#qrTrouble');
+  isGeneratingLanQR = false;
+};
+
+$('#btnHideQR').onclick = ()=>{
+  $('#qrSection').style.display = 'none';
+  $('#btnLanQR').style.display = 'inline';
+  isGeneratingLanQR = false;  // Reset flag when hiding
+};
+
+/* Responder: Enter code (auto-detects configuration) */
+$('#btnResponderConnect').onclick = async ()=>{
+  try {
+    await ensureFirebaseReady();
+  } catch(e) {
+    showStatus('#responderStatus', '<span class="emoji">❌</span> Connection error. Check your internet.', 'error');
+    log('Failed to initialize Firebase:', e.message);
+    return;
+  }
+  
+  const code = $('#responderCodeInput').value.trim();
+  if(!code){ 
+    showStatus('#responderStatus', '<span class="emoji">⚠️</span> Please enter a code', 'error');
+    return;
+  }
+  
+  showStatus('#responderStatus', '<span class="emoji">🔍</span> Looking up code...', 'loading');
+  
+  const ref = fb.doc(fb.db, 'pairs', code);
+  const snap = await fb.getDoc(ref);
+  
+  if(!snap.exists()){ 
+    showStatus('#responderStatus', '<span class="emoji">❌</span> Code not found. Check and try again.', 'error');
+    log('Code not found'); 
+    return; 
+  }
+  
+  const data = snap.data() || {};
+  
+  // Check if code is expired (24 hours)
+  if(data.ts){
+    const ageMs = Date.now() - data.ts.toMillis();
+    const ageHours = ageMs / (1000 * 60 * 60);
+    if(ageHours > 24){
+      showStatus('#responderStatus', '<span class="emoji">❌</span> Code expired (24 hours old). Ask for new code.', 'error');
+      log('Code expired:', ageHours.toFixed(1), 'hours old');
+      return;
+    }
+  }
+  
+  if(!data.offer){ 
+    showStatus('#responderStatus', '<span class="emoji">⏳</span> Code exists but no offer yet. Wait a moment.', 'error');
+    log('No offer in code'); 
+    return; 
+  }
+  
+  showStatus('#responderStatus', '<span class="emoji">🔗</span> Connecting to Controller...', 'loading');
+  
+  const obj = unpack(data.offer);
+  
+  // Detect what kind of candidates are in the offer
+  const hasRelay = obj.sdp.c && obj.sdp.c.some(c => {
+    const parts = c.split('|');
+    return parts.length >= 6 && parts[5] === 'relay';
+  });
+  const hasSRFLX = obj.sdp.c && obj.sdp.c.some(c => {
+    const parts = c.split('|');
+    return parts.length >= 6 && parts[5] === 'srflx';
+  });
+  
+  let pcConfig = 'lan';
+  if(hasRelay){
+    pcConfig = 'turn';
+    log('Responder: Offer has TURN candidates');
+  } else if(hasSRFLX){
+    pcConfig = 'stun';
+    log('Responder: Offer has STUN candidates');
+  } else {
+    log('Responder: Offer has host candidates');
+  }
+  
+  try{ pc?.close(); }catch{}
+  pc = await newPC(pcConfig);
+  
+  const fullSDP = reconstructSDP(obj.sdp);
+  await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+  await pc.setLocalDescription(await pc.createAnswer());
+  
+  // Wait for first relay candidate OR timeout (whichever comes first)
+  let timeoutFired = false;
+  await new Promise(res => {
+    let resolved = false;
+    const resolve = () => {
+      if (!resolved) {
+        resolved = true;
+        res();
+      }
+    };
+    
+    // Listen for relay candidates
+    const checkCandidate = (e) => {
+      if (e.candidate && e.candidate.type === 'relay' && !timeoutFired) {
+        log('Responder: Uploading answer...');
+        pc.removeEventListener('icecandidate', checkCandidate);
+        resolve();
+      }
+    };
+    pc.addEventListener('icecandidate', checkCandidate);
+    
+    // Timeout fallback: 3 seconds max wait
+    setTimeout(() => {
+      if(!resolved){
+        timeoutFired = true;
+        pc.removeEventListener('icecandidate', checkCandidate);
+        log('Responder: Uploading answer with available candidates...');
+        resolve();
+      }
+    }, 1500);
+  });
+  
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type, pcConfig !== 'lan');
+  const joinPacked = pack({ role:'join', sdp: minimalSDP });
+  
+  await fb.setDoc(ref, { answer: joinPacked, ts: fb.ts() }, { merge:true });
+  log('Responder: answer uploaded');
+  showStatus('#responderStatus', '<span class="emoji">⏳</span> Waiting for connection...', 'loading');
+};
+
+/* ================= QR Code Generation ================= */
+const QR_PREFIX='UCP1|';
+const NAV_SCALE=6;
+
+function tryRenderQR(text, typeNumber, ecc='M'){
+  const q = qrcode(typeNumber, ecc);
+  q.addData(text);
+  q.make();
+  return q.createSvgTag(NAV_SCALE);
+}
+
+function maxPayloadForVersion(ver, parts){
+  const capacities = {4: 114, 6: 180, 8: 250, 10: 346, 12: 434, 14: 538, 16: 666, 18: 778, 20: 906, 24: 1174, 28: 1502, 32: 1853, 36: 2132, 40: 2409};
+  const maxChars = capacities[ver] || 100;
+  const overhead = QR_PREFIX.length + String(parts).length + 1 + String(parts).length + 1;
+  return Math.max(0, maxChars - overhead);
+}
+
+function makeChunks(packed, forceV4=false){
+  console.log(`🔍 makeChunks called: packed.length=${packed.length}, forceV4=${forceV4}`);
+  
+  if(forceV4){
+    console.log('📦 Forcing V4 chunks...');
+    const ver = 4; 
+    for(let parts=2; parts<=20; parts++){
+      const maxPay = maxPayloadForVersion(ver, parts);
+      const size = Math.ceil(packed.length / parts);
+      console.log(`  Trying ${parts} parts, size=${size}, maxPay=${maxPay}`);
+      if(size <= maxPay){
+        const out = [];
+        for(let i=0; i<parts; i++){
+          const slice = packed.slice(i*size, Math.min((i+1)*size, packed.length));
+          const framed = `${QR_PREFIX}${parts}|${i+1}|${slice}`;
+          try{
+            tryRenderQR(framed, ver, 'M');
+            out.push({ver, str: framed});
+            console.log(`    ✓ Chunk ${i+1}/${parts} OK (${framed.length} chars)`);
+          }catch(e){ 
+            console.log(`    ✗ Chunk ${i+1}/${parts} FAILED:`, e.message);
+            break; 
+          }
+        }
+        if(out.length === parts){
+          console.log(`✅ Successfully created ${parts} V4 chunks`);
+          return out;
+        }
+      }
+    }
+    console.error('❌ Payload too large for V4');
+    throw Error('Payload too large for V4');
+  } else {
+    console.log('📦 Trying auto chunking...');
+    const versions = [4,6,8,10,12,14,16,18,20,24,28,32,36,40];
+    for(let parts=2; parts<=4; parts++){
+      console.log(`  Trying ${parts} parts...`);
+      for(const ver of versions){
+        const size = Math.ceil(packed.length / parts);
+        const out = []; let ok = true;
+        for(let i=0; i<parts; i++){
+          const slice = packed.slice(i*size, Math.min((i+1)*size, packed.length));
+          const framed = `${QR_PREFIX}${parts}|${i+1}|${slice}`;
+          try{
+            tryRenderQR(framed, ver, 'M');
+            out.push({ver, str: framed});
+          }catch(e){ ok=false; break; }
+        }
+        if(ok){
+          console.log(`✅ Successfully created ${parts} chunks with V${ver}`);
+          return out;
+        }
+      }
+    }
+    console.error('❌ Payload too large');
+    throw Error('Payload too large');
+  }
+}
+
+let qrPacked='', qrChunks=[], qrIdx=0, autoTimer=null;
+let qrPackedResponder='', qrChunksResponder=[], qrIdxResponder=0, autoTimerResponder=null;
+
+function showDenseQR(packed, wrapId, navId, troubleId){
+  console.log(`🎨 showDenseQR: packed.length=${packed.length}, wrapId=${wrapId}`);
+  try{
+    console.log(`  Attempting single QR (ver=0, auto-detect)...`);
+    const svg = tryRenderQR(packed, 0, 'M');
+    $(wrapId).innerHTML = svg;
+    $(navId).style.display='none';
+    if(troubleId) $(troubleId).style.display='inline';
+    console.log(`✅ Dense QR rendered successfully`);
+    log(`Dense QR shown (${packed.length} chars)`);
+  }catch(e){
+    console.log(`⚠️ Dense QR failed, need chunking:`, e.message);
+    log('Dense overflow, chunking...');
+    const chunks = makeChunks(packed, false);
+    if(wrapId === '#qrWrap'){
+      console.log(`📦 Setting controller chunks: ${chunks.length} parts`);
+      qrChunks = chunks; qrIdx=0; showChunkQR();
+    } else {
+      console.log(`📦 Setting responder chunks: ${chunks.length} parts`);
+      qrChunksResponder = chunks; qrIdxResponder=0; showChunkQRResponder();
+    }
+  }
+}
+
+function showChunkQR(){
+  if(!qrChunks.length) return;
+  const {ver,str} = qrChunks[qrIdx];
+  const svg = tryRenderQR(str, ver, 'M');
+  $('#qrWrap').innerHTML = svg;
+  $('#qrIndex').textContent = `${qrIdx+1}/${qrChunks.length} (V${ver})`;
+  $('#qrNav').style.display='flex';
+  $('#qrTrouble').style.display='inline';
+  
+  if($('#autoAdvance').checked){
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(()=>{
+      qrIdx = (qrIdx+1) % qrChunks.length;
+      showChunkQR();
+    }, 1500);
+  }
+}
+
+function showChunkQRResponder(){
+  if(!qrChunksResponder.length) return;
+  const {ver,str} = qrChunksResponder[qrIdxResponder];
+  const svg = tryRenderQR(str, ver, 'M');
+  $('#qrWrapResponderReply').innerHTML = svg;
+  $('#qrIndexResponder').textContent = `${qrIdxResponder+1}/${qrChunksResponder.length} (V${ver})`;
+  $('#qrNavResponder').style.display='flex';
+  $('#qrTroubleResponder').style.display='inline';
+  
+  if($('#autoAdvanceResponder').checked){
+    clearTimeout(autoTimerResponder);
+    autoTimerResponder = setTimeout(()=>{
+      qrIdxResponder = (qrIdxResponder+1) % qrChunksResponder.length;
+      showChunkQRResponder();
+    }, 1500);
+  }
+}
+
+$('#qrPrev').onclick=()=>{ clearTimeout(autoTimer); qrIdx=(qrIdx-1+qrChunks.length)%qrChunks.length; showChunkQR(); };
+$('#qrNext').onclick=()=>{ clearTimeout(autoTimer); qrIdx=(qrIdx+1)%qrChunks.length; showChunkQR(); };
+$('#qrPrevResponder').onclick=()=>{ clearTimeout(autoTimerResponder); qrIdxResponder=(qrIdxResponder-1+qrChunksResponder.length)%qrChunksResponder.length; showChunkQRResponder(); };
+$('#qrNextResponder').onclick=()=>{ clearTimeout(autoTimerResponder); qrIdxResponder=(qrIdxResponder+1)%qrChunksResponder.length; showChunkQRResponder(); };
+
+$('#qrTrouble').onclick = ()=>{
+  console.log('🔧 Trouble button clicked (Controller)');
+  if(!qrPacked){
+    console.error('❌ No qrPacked available!');
+    return;
+  }
+  console.log(`📦 qrPacked length: ${qrPacked.length}`);
+  clearTimeout(autoTimer);
+  qrChunks = makeChunks(qrPacked, true);
+  qrIdx=0; 
+  console.log(`✅ Created ${qrChunks.length} forced V4 chunks, showing first...`);
+  showChunkQR();
+  log(`Forced V4: ${qrChunks.length} parts`);
+};
+
+$('#qrTroubleResponder').onclick = ()=>{
+  console.log('🔧 Trouble button clicked (Responder)');
+  if(!qrPackedResponder){
+    console.error('❌ No qrPackedResponder available!');
+    return;
+  }
+  console.log(`📦 qrPackedResponder length: ${qrPackedResponder.length}`);
+  clearTimeout(autoTimerResponder);
+  qrChunksResponder = makeChunks(qrPackedResponder, true);
+  qrIdxResponder=0; 
+  console.log(`✅ Created ${qrChunksResponder.length} forced V4 chunks, showing first...`);
+  showChunkQRResponder();
+  log(`Forced V4: ${qrChunksResponder.length} parts`);
+};
+
+$('#qrWrap').onclick = ()=>{
+  $('#qrOverlayContent').innerHTML = $('#qrWrap').innerHTML;
+  $('#qrOverlay').classList.add('active');
+};
+$('#qrWrapResponderReply').onclick = ()=>{
+  $('#qrOverlayContent').innerHTML = $('#qrWrapResponderReply').innerHTML;
+  $('#qrOverlay').classList.add('active');
+};
+$('#qrOverlayClose').onclick = ()=>$('#qrOverlay').classList.remove('active');
+$('#qrOverlay').onclick = (e)=>{
+  if(e.target === $('#qrOverlay')) $('#qrOverlay').classList.remove('active');
+};
+
+async function controllerGenerateQR(){
+  try{ pc?.close(); }catch{}
+  pc = newPC('lan');
+  dc = pc.createDataChannel('x'); 
+  attachDC();
+  
+  await pc.setLocalDescription(await pc.createOffer());
+  log('Controller: generating QR (no STUN)...');
+  
+  if(pc.iceGatheringState !== 'complete'){
+    await new Promise(res => {
+      const h = () => {
+        if(pc.iceGatheringState === 'complete'){
+          pc.removeEventListener('icegatheringstatechange', h);
+          res();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', h);
+    });
+  }
+  
+  const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, 'offer', false);
+  qrPacked = pack({ role:'host', sdp: minimalSDP });
+  log(`QR payload: ${qrPacked.length} chars`);
+  showDenseQR(qrPacked, '#qrWrap', '#qrNav', '#qrTrouble');
+}
+
+/* ================= QR Scanning ================= */
+let scannerController=null, scannerResponder=null;
+let asm={total:0, got:new Set(), parts:[]};
+
+function resetAsm(isController = false){ 
+  asm={total:0,got:new Set(),parts:[]}; 
+  if(isController){
+    $('#qrProgressController').textContent='';
+  } else {
+    $('#qrProgressResponder').textContent='';
+  }
+}
+
+function updateProgress(isController = false){
+  if(!asm.total) return;
+  let display = 'Scanned: [';
+  for(let i=1; i<=asm.total; i++){
+    display += `${i}${asm.got.has(i)?'✓':'◻'}`;
+    if(i < asm.total) display += ' ';
+  }
+  display += `]`;
+  
+  if(isController){
+    $('#qrProgressController').textContent = display;
+  } else {
+    $('#qrProgressResponder').textContent = display;
+  }
+}
+
+function absorb(text, isController=false){
+  if(text.startsWith(QR_PREFIX)){
+    const rest=text.slice(QR_PREFIX.length);
+    const p1=rest.indexOf('|'); const p2=rest.indexOf('|',p1+1);
+    if(p1<0||p2<0) return;
+    const total=+rest.slice(0,p1), index=+rest.slice(p1+1,p2), data=rest.slice(p2+1);
+    if(!asm.total){ asm.total=total; asm.parts=Array(total).fill(''); }
+    if(!asm.got.has(index)){ 
+      asm.got.add(index); 
+      asm.parts[index-1]=data;
+      console.log(`${timestamp()} 📦 Chunk ${index}/${total} received`);
+    }
+    updateProgress(isController);
+    if(asm.got.size===asm.total){
+      const packed = asm.parts.join('');
+      log('All chunks received!');
+      console.log(`${timestamp()} ✅ All chunks assembled, stopping scanner`);
+      
+      // Stop the scanner to prevent rescanning
+      if(isController){
+        scannerController = stopScanner(scannerController, '#scanStartController', '#scanStopController');
+      } else {
+        scannerResponder = stopScanner(scannerResponder, '#scanStartResponder', '#scanStopResponder');
+      }
+      
+      resetAsm(isController);
+      applyPacked(packed, isController);
+    }
+  }else{
+    applyPacked(text, isController);
+  }
+}
+
+async function applyPacked(packed, isController){
+  try{
+    const obj = unpack(packed);
+    
+    if(isController && obj.role==='join'){
+      if(!pc.currentRemoteDescription){
+        const fullSDP = reconstructSDP(obj.sdp);
+        await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+        log('Controller: got answer QR, connecting...');
+      }
+    } else if(!isController && obj.role==='host'){
+      // Auto-detect network configuration from offer (same logic as code method)
+      const hasRelay = obj.sdp.c && obj.sdp.c.some(c => {
+        const parts = c.split('|');
+        return parts.length >= 6 && parts[5] === 'relay';
+      });
+      const hasSRFLX = obj.sdp.c && obj.sdp.c.some(c => {
+        const parts = c.split('|');
+        return parts.length >= 6 && parts[5] === 'srflx';
+      });
+      
+      let pcConfig = 'lan';
+      if(hasRelay){
+        pcConfig = 'turn';
+        log('Responder QR: Offer has TURN candidates');
+      } else if(hasSRFLX){
+        pcConfig = 'stun';
+        log('Responder QR: Offer has STUN candidates');
+      } else {
+        log('Responder QR: Offer has host candidates (LAN)');
+      }
+      
+      if(!pc) pc = await newPC(pcConfig);  // ← FIXED: Added await!
+      
+      if(!pc.currentRemoteDescription){
+        const fullSDP = reconstructSDP(obj.sdp);
+        await pc.setRemoteDescription({type: obj.sdp.t === 'o' ? 'offer' : 'answer', sdp: fullSDP});
+        await pc.setLocalDescription(await pc.createAnswer());
+        
+        if(pc.iceGatheringState !== 'complete'){
+          await new Promise(res => {
+            const h = () => {
+              if(pc.iceGatheringState === 'complete'){
+                pc.removeEventListener('icegatheringstatechange', h);
+                res();
+              }
+            };
+            pc.addEventListener('icegatheringstatechange', h);
+          });
+        }
+        
+        const minimalSDP = extractMinimalSDP(pc.localDescription.sdp, pc.localDescription.type, pcConfig !== 'lan');
+        qrPackedResponder = pack({ role:'join', sdp: minimalSDP });
+        
+        stopScanner(scannerResponder, '#scanStartResponder', '#scanStopResponder');
+        showStep('#step4responderReply');
+        showDenseQR(qrPackedResponder, '#qrWrapResponderReply', '#qrNavResponder', '#qrTroubleResponder');
+        log('Responder: reply QR ready');
+      }
+    }
+  }catch(e){ 
+    console.error(`${timestamp()} ❌ ERR applyPacked:`, e);
+    log('ERR applyPacked:', e.message || e);
+    console.log(`${timestamp()} Packed data length: ${packed?.length || 'undefined'}`);
+    console.log(`${timestamp()} isController: ${isController}`);
+  }
+}
+
+function stopScanner(scanner, startBtn, stopBtn){
+  if(!scanner) return null;
+  scanner.stop().then(()=>scanner.clear()).catch(()=>{});
+  $(startBtn).disabled=false;
+  $(stopBtn).disabled=true;
+  return null;
+}
+
+function stopAllScanners(){
+  if(scannerController) scannerController = stopScanner(scannerController, '#scanStartController', '#scanStopController');
+  if(scannerResponder) scannerResponder = stopScanner(scannerResponder, '#scanStartResponder', '#scanStopResponder');
+}
+
+$('#scanStartController').onclick=()=>{
+  resetAsm(true);
+  
+  // Automatically hide code section and QR display when scanner starts
+  $('#controllerCodeSection').style.display = 'none';
+  $('#qrDisplayArea').style.display = 'none';
+  $('#btnShowCodeAndQR').style.display = 'inline-block';
+  $('#btnHideQR').style.display = 'none'; // Hide the "Hide QR Code" button while scanning
+  
+  try{
+    scannerController = new Html5Qrcode("readerController");
+    scannerController.start({facingMode:"environment"},{fps:10,qrbox:240}, txt=>absorb(txt, true), _err=>{})
+      .then(()=>{
+        $('#scanStartController').disabled=true;
+        $('#scanStopController').disabled=false;
+        log('Controller scanner started');
+      })
+      .catch(err=>log('Controller scan ERR:', err));
+  }catch(e){ log('Controller scanner init ERR:', e.message); }
+};
+
+$('#scanStopController').onclick=()=>{ 
+  scannerController = stopScanner(scannerController, '#scanStartController', '#scanStopController');
+  resetAsm(true);
+  
+  // Automatically restore code section and QR display when scanner stops
+  $('#controllerCodeSection').style.display = 'block';
+  $('#qrDisplayArea').style.display = 'block';
+  $('#btnShowCodeAndQR').style.display = 'none';
+  $('#btnHideQR').style.display = 'block'; // Show "Hide QR Code" button again
+  
+  log('Controller scanner stopped');
+};
+
+// Toggle button to show/hide code and QR while scanning
+$('#btnShowCodeAndQR').onclick = ()=>{
+  const codeSection = $('#controllerCodeSection');
+  const qrArea = $('#qrDisplayArea');
+  const btn = $('#btnShowCodeAndQR');
+  
+  if(codeSection.style.display === 'none'){
+    codeSection.style.display = 'block';
+    qrArea.style.display = 'block';
+    btn.textContent = '▲ Hide my code and QR';
+  } else {
+    codeSection.style.display = 'none';
+    qrArea.style.display = 'none';
+    btn.textContent = '▼ Show my code and QR';
+  }
+};
+
+
+$('#scanStartResponder').onclick=()=>{
+  resetAsm(false);
+  
+  // Automatically hide code entry section when scanner starts
+  $('#responderCodeSection').style.display = 'none';
+  $('#btnShowCodeEntry').style.display = 'inline-block';
+  
+  try{
+    scannerResponder = new Html5Qrcode("readerResponder");
+    scannerResponder.start({facingMode:"environment"},{fps:10,qrbox:240}, txt=>absorb(txt, false), _err=>{})
+      .then(()=>{
+        $('#scanStartResponder').disabled=true;
+        $('#scanStopResponder').disabled=false;
+        log('Responder scanner started');
+      })
+      .catch(err=>log('Responder scan ERR:', err));
+  }catch(e){ log('Responder scanner init ERR:', e.message); }
+};
+
+$('#scanStopResponder').onclick=()=>{ 
+  scannerResponder = stopScanner(scannerResponder, '#scanStartResponder', '#scanStopResponder');
+  resetAsm(false);
+  
+  // Automatically restore code entry section when scanner stops
+  $('#responderCodeSection').style.display = 'block';
+  $('#btnShowCodeEntry').style.display = 'none';
+  
+  log('Responder scanner stopped');
+};
+
+// Toggle button to show/hide code entry while scanning
+$('#btnShowCodeEntry').onclick = ()=>{
+  const codeSection = $('#responderCodeSection');
+  const btn = $('#btnShowCodeEntry');
+  
+  if(codeSection.style.display === 'none'){
+    codeSection.style.display = 'block';
+    btn.textContent = '▲ Hide code entry';
+  } else {
+    codeSection.style.display = 'none';
+    btn.textContent = '▼ Show code entry';
+  }
+};
+
+$('#qrApplyResponder').onclick=()=>{ 
+  const t=$('#qrPasteResponder').value.trim(); 
+  if(t){ 
+    absorb(t, false); 
+    $('#qrPasteResponder').value=''; 
+  } 
+};
+
+</script>
+</body>
+</html>
