@@ -26,6 +26,9 @@ const FILES_TO_CACHE = [
   "/sounds/TeReo_a.mp3",
   "/sounds/TeReo_a_a_a.mp3",
   "/sounds/TeReo_a_a_a_a_a.mp3",
+  "/sounds/TeReo_f.mp3",
+  "/sounds/TeReo_f_f_f.mp3",
+  "/sounds/TeReo_f_f_f_f_f.mp3",
   "/sounds/TeReo_i.mp3",
   "/sounds/TeReo_i_i_i.mp3",
   "/sounds/TeReo_i_i_i_i_i.mp3",
@@ -89,3 +92,4 @@ self.addEventListener("fetch", evt => {
     })
   );
 });
+
