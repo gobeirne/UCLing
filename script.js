@@ -56,6 +56,10 @@ function preloadSounds() {
     const el = new Audio(url);
     el.preload = "auto";
     audioElements[key] = el;
+    promises.push(fetch(url)
+      .then(r => r.arrayBuffer())
+      .then(buf => audioCtx.decodeAudioData(buf))
+      .then(decoded => { audioBuffers[key] = decoded; }));
   });
 
   return Promise.all(promises);
@@ -170,14 +174,25 @@ function showTestButton() {
     testButton.onclick = () => {
       stopCurrentAudio();
       const key = currentLanguage === "english" ? "NZEng_calib" : "TeReo_calib";
-      const audio = audioElements[key].cloneNode();
-      const track = audioCtx.createMediaElementSource(audio);
+      const buffer = audioBuffers[key];
+      if (!buffer) {
+        console.warn("No buffer for calibration sound:", key);
+        return;
+      }
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
       const gainNode = audioCtx.createGain();
       gainNode.gain.value = calibratedGain;
-      track.connect(gainNode).connect(audioCtx.destination);
-      audio.play();
-      currentAudio = audio;
-      audio.onended = () => currentAudio = null;
+      source.connect(gainNode).connect(audioCtx.destination);
+      source.start();
+      currentAudio = source;
+      currentButton = testButton;
+      testButton.classList.add('active');
+      source.onended = () => {
+        testButton.classList.remove('active');
+        currentAudio = null;
+        currentButton = null;
+      };
     };
     document.querySelector('.controls').appendChild(testButton);
   }
