@@ -9,7 +9,7 @@ const languageData = {
   },
   english: {
     title: "Ling Sound Test",
-    phonemes: ['m', 'or', 'ah', 'oo', 'ee', 'sh', 'ss'],
+    phonemes: ['m', 'or', 'ah', 'oo', 'ee', 'sh', 's'],
     prefix: "NZEng_"
   }
 };
@@ -264,4 +264,5 @@ window.onload = async () => {
     }
   }
 };
+
 
