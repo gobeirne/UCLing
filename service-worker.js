@@ -14,15 +14,9 @@ const FILES_TO_CACHE = [
   "/sounds/TeReo_m.mp3",
   "/sounds/TeReo_m_m_m.mp3",
   "/sounds/TeReo_m_m_m_m_m.mp3",
-  "/sounds/TeReo_p.mp3",
-  "/sounds/TeReo_p_p_p.mp3",
-  "/sounds/TeReo_p_p_p_p_p.mp3",
   "/sounds/TeReo_t.mp3",
   "/sounds/TeReo_t_t_t.mp3",
   "/sounds/TeReo_t_t_t_t_t.mp3",
-  "/sounds/TeReo_h.mp3",
-  "/sounds/TeReo_h_h_h.mp3",
-  "/sounds/TeReo_h_h_h_h_h.mp3",
   "/sounds/TeReo_a.mp3",
   "/sounds/TeReo_a_a_a.mp3",
   "/sounds/TeReo_a_a_a_a_a.mp3",
@@ -55,9 +49,9 @@ const FILES_TO_CACHE = [
   "/sounds/NZEng_sh.mp3",
   "/sounds/NZEng_sh_sh_sh.mp3",
   "/sounds/NZEng_sh_sh_sh_sh_sh.mp3",
-  "/sounds/NZEng_ss.mp3",
-  "/sounds/NZEng_ss_ss_ss.mp3",
-  "/sounds/NZEng_ss_ss_ss_ss_ss.mp3",
+  "/sounds/NZEng_s.mp3",
+  "/sounds/NZEng_s_s_ss.mp3",
+  "/sounds/NZEng_s_s_s_s_s.mp3",
   "/sounds/NZEng_calib.mp3"
 ];
 
@@ -92,4 +86,5 @@ self.addEventListener("fetch", evt => {
     })
   );
 });
+
 
