@@ -118,8 +118,10 @@ function playSound(key, button) {
 
   source.onended = () => {
     button.classList.remove('active');
-    currentAudio = null;
-    currentButton = null;
+    if (currentAudio === source) {
+      currentAudio = null;
+      currentButton = null;
+    }
   };
 }
 
@@ -190,8 +192,10 @@ function showTestButton() {
       testButton.classList.add('active');
       source.onended = () => {
         testButton.classList.remove('active');
-        currentAudio = null;
-        currentButton = null;
+        if (currentAudio === source) {
+          currentAudio = null;
+          currentButton = null;
+        }
       };
     };
     document.querySelector('.controls').appendChild(testButton);
